@@ -11,7 +11,7 @@ A complete multi-agent workflow: an Enterprise Market-Research Agent hires a Scr
 
 ### Phase 1: Authentication & Scope Locking (Proof-of-Agent Layer)
 - Delegation: the human assigns a budget of $50 to their primary buyer agent (Market-Research AI).
-- ZKP Generation: the Market-Research AI needs to call external worker agents. It compiles a cryptographic Zero-Knowledge Proof specifying: Scope (authorized to interact with registered PayPal Merchant Agents only), Ceiling (hard limit of $50), Expiration (30 minutes from issuance).
+- ZKP Generation: the Market-Research AI needs to call external worker agents. It compiles a cryptographic Zero-Knowledge Proof specifying: Scope (authorized to interact with registered PayPal Merchant Agents only), Ceiling (hard limit of $50), Expiration (30 minutes from issue).
 - Handshake: the agent connects to the PayPal ATN Gateway. PayPal validates the ZKP. The gateway opens a temporary $50 transaction vault. The human's underlying credit card or master wallet credentials remain completely hidden.
 
 ## Design Notes (Sharp Notes)
@@ -44,3 +44,13 @@ When millions of autonomous AI agents start buying goods, subscribing to service
 - Delivery to Inspection Sandbox: Data-Science AI completes the model and submits the .onnx file payload to the system.
 - Automated AI Inspection: before the funds unlock, the system spins up an isolated sandbox inspector: it loads the delivered model, runs automated validation — verifies input/output tensor shapes, tests accuracy against benchmark datasets, and scans for malicious code injections.
 - Final Settlement or Refund: if verification passes, the system signals the PayPal Escrow API and the $25.00 unlocks immediately into Data-Science AI's PayPal account. If verification fails (e.g., model is broken/hallucinated), the escrow cancels, the $25.00 returns to the user's vault, and Data-Science AI's merchant trust rating drops automatically.
+
+## Why the Integrated System is Unbeatable
+
+When presented as an integrated stack, the system shows how PayPal addresses the entire lifecycle of AI-driven commerce.
+
+| Problem in the AI Economy | Individual Component | System Integration Result |
+|---|---|---|
+| How do we know the bot isn't rogue? | Proof-of-Agent Layer | Cryptographic constraints prevent runaway spend or identity theft |
+| How do bots pay for sub-cent compute? | Neural Streaming Layer | Low-overhead WebSocket vouchers settle high-frequency micro-transactions |
+| How do bots verify digital deliverables? | VeriPay Escrow Layer | Programmatic sandboxing eliminates chargebacks and synthetic asset fraud |
