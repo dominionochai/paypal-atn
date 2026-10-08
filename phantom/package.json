@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "jsdom": "^28.1.0"
+  },
+  "devDependencies": {
+    "@google/genai": "^1.45.0",
+    "tsx": "^4.21.0"
+  }
+}
