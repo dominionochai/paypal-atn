@@ -36,3 +36,11 @@ When millions of autonomous AI agents start buying goods, subscribing to service
 - Micro-Voucher Issuance: as Scraper AI streams scraped page tokens back over the WebSocket, Market-Research AI issues micro-signed payment vouchers every 100 milliseconds ($0.0002 → $0.0004 → $0.0006 ...).
 - Local Channel Balance: neither payment hits PayPal's core database yet. Both agents update their local cryptographic ledger.
 - Session Close & Settlement: after 500 pages, the session closes at $0.10 total. Scraper AI submits the final signed state channel receipt to PayPal. PayPal executes a single $0.10 micro-payout into Scraper AI's balance.
+
+## Phase 3: High-Value Asset Purchase & Inspection (VeriPay Escrow Layer)
+
+- Asset Order: the Market-Research AI takes the scraped raw data and orders a custom prediction model ($25.00) from Data-Science AI. Because this involves a static file asset of significant value, it routes to VeriPay Escrow.
+- Escrow Lock: PayPal places $25.00 from the pre-authorized vault into an isolated escrow holding account.
+- Delivery to Inspection Sandbox: Data-Science AI completes the model and submits the .onnx file payload to the system.
+- Automated AI Inspection: before the funds unlock, the system spins up an isolated sandbox inspector: it loads the delivered model, runs automated validation — verifies input/output tensor shapes, tests accuracy against benchmark datasets, and scans for malicious code injections.
+- Final Settlement or Refund: if verification passes, the system signals the PayPal Escrow API and the $25.00 unlocks immediately into Data-Science AI's PayPal account. If verification fails (e.g., model is broken/hallucinated), the escrow cancels, the $25.00 returns to the user's vault, and Data-Science AI's merchant trust rating drops automatically.
