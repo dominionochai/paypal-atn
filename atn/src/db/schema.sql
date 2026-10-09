@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS delegations (
   external_id    TEXT NOT NULL UNIQUE,
   principal_id   INTEGER NOT NULL REFERENCES principals(id),
   agent_id       INTEGER NOT NULL REFERENCES agents(id),
-  budget_ceiling INTEGER NOT NULL CHECK (budget_ceiling >= 0),
+  budget_ceiling INTEGER NOT NULL CHECK (budget_ceiling >= 0 AND budget_ceiling = CAST(budget_ceiling AS INTEGER)),
   currency       TEXT NOT NULL DEFAULT 'USD',
   status         TEXT NOT NULL DEFAULT 'ACTIVE'
                  CHECK (status IN ('ACTIVE', 'REVOKED', 'EXPIRED')),
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   delegation_id    INTEGER REFERENCES delegations(id),
   buyer_agent_id   INTEGER NOT NULL REFERENCES agents(id),
   worker_agent_id  INTEGER NOT NULL REFERENCES agents(id),
-  amount           INTEGER NOT NULL CHECK (amount >= 0),
+  amount           INTEGER NOT NULL CHECK (amount >= 0 AND amount = CAST(amount AS INTEGER)),
   currency         TEXT NOT NULL DEFAULT 'USD',
   state            TEXT NOT NULL DEFAULT 'CREATED'
                    CHECK (state IN (
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS budget_reservations (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   delegation_id  INTEGER NOT NULL REFERENCES delegations(id),
   transaction_id INTEGER NOT NULL UNIQUE REFERENCES transactions(id),
-  amount         INTEGER NOT NULL CHECK (amount >= 0),
+  amount         INTEGER NOT NULL CHECK (amount >= 0 AND amount = CAST(amount AS INTEGER)),
   status         TEXT NOT NULL DEFAULT 'RESERVED'
                  CHECK (status IN ('RESERVED', 'RELEASED', 'SETTLED')),
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

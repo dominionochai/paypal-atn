@@ -7,3 +7,4 @@ coverage/
 *.db-shm
 .env
 .env.*
+*.timestamp-*.mjs
