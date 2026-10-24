@@ -11,7 +11,7 @@ import {
 const machine = BASE_TRANSACTION_MACHINE;
 
 describe("state set", () => {
-  it("declares all fifteen states", () => {
+  it("declares all sixteen states", () => {
     expect(TRANSACTION_STATES).toEqual([
       "CREATED",
       "AUTHORIZED",
@@ -26,6 +26,7 @@ describe("state set", () => {
       "VERIFICATION_PENDING",
       "VERIFICATION_FAILED",
       "REFUND_PENDING",
+      "REFUND_FAILED",
       "REFUNDED",
       "SETTLEMENT_FAILED",
     ]);
@@ -58,6 +59,9 @@ describe("legal transitions", () => {
     ["COMPLETED", "DISPUTED"],
     ["VERIFICATION_PENDING", "SETTLEMENT_PENDING"],
     ["VERIFICATION_PENDING", "VERIFICATION_FAILED"],
+    ["VERIFICATION_PENDING", "DISPUTED"],
+    ["VERIFICATION_PENDING", "EXPIRED"],
+    ["VERIFICATION_PENDING", "CANCELLED"],
     ["VERIFICATION_FAILED", "REFUND_PENDING"],
     ["VERIFICATION_FAILED", "REJECTED"],
     ["VERIFICATION_FAILED", "DISPUTED"],
@@ -74,11 +78,27 @@ describe("legal transitions", () => {
     ["DISPUTED", "CANCELLED"],
     ["DISPUTED", "REJECTED"],
     ["REFUND_PENDING", "REFUNDED"],
+    ["REFUND_PENDING", "REFUND_FAILED"],
     ["REFUND_PENDING", "DISPUTED"],
+    ["REFUND_FAILED", "REFUND_PENDING"],
+    ["REFUND_FAILED", "DISPUTED"],
   ];
 
   it.each(legalPairs)("%s -> %s does not throw", (from, to) => {
     expect(() => machine.transition(from, to)).not.toThrow();
+  });
+
+  it("transition returns the destination state on success", () => {
+    expect(machine.transition("CREATED", "AUTHORIZED")).toBe("AUTHORIZED");
+    expect(machine.transition("REFUND_PENDING", "REFUND_FAILED")).toBe("REFUND_FAILED");
+    expect(machine.transition("REFUND_FAILED", "REFUND_PENDING")).toBe("REFUND_PENDING");
+  });
+
+  it("REFUND_FAILED is a recoverable, non-terminal state", () => {
+    expect(machine.can("REFUND_FAILED", "REFUND_PENDING")).toBe(true);
+    expect(machine.can("REFUND_FAILED", "DISPUTED")).toBe(true);
+    expect(machine.can("REFUND_FAILED", "SETTLED")).toBe(false);
+    expect(machine.can("REFUND_FAILED", "REFUNDED")).toBe(false);
   });
 
   it("every declared legal destination is reachable", () => {

@@ -1,13 +1,19 @@
--- ATN schema (canonical current state).
--- This file is the single migration at this milestone; it is applied by the
--- migration runner in src/db/db.ts. Money is stored as INTEGER micro-dollars
--- (1 USD = 1_000_000 micro-dollars); no floating-point money anywhere.
+-- ATN schema, migration 001 (initial).
+--
+-- Migrations in src/db/migrations/ are the single source of truth for the
+-- schema. From Milestone 1 onward, every schema change is a NEW numbered
+-- migration; never edit an applied migration after it ships. Money is stored
+-- as INTEGER micro-dollars (1 USD = 1_000_000 micro-dollars); no
+-- floating-point money anywhere, and no amount may exceed
+-- Number.MAX_SAFE_INTEGER (9007199254740991).
 --
 -- This schema is enforcement-layer only. It does NOT include signing,
 -- vouchers, escrow, or HTTP concerns - those arrive in later milestones and
--- will add their own migrations to src/db/migrations/.
-
-PRAGMA foreign_keys = ON;
+-- will add their own migrations.
+--
+-- The migration runner owns the `_migrations` bookkeeping table, so it is not
+-- created here. `PRAGMA foreign_keys` is a connection-level setting owned by
+-- src/db/db.ts, so it is not repeated here either.
 
 CREATE TABLE IF NOT EXISTS principals (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +39,11 @@ CREATE TABLE IF NOT EXISTS delegations (
   external_id    TEXT NOT NULL UNIQUE,
   principal_id   INTEGER NOT NULL REFERENCES principals(id),
   agent_id       INTEGER NOT NULL REFERENCES agents(id),
-  budget_ceiling INTEGER NOT NULL CHECK (budget_ceiling >= 0 AND budget_ceiling = CAST(budget_ceiling AS INTEGER)),
+  budget_ceiling INTEGER NOT NULL CHECK (
+    budget_ceiling >= 0
+    AND budget_ceiling = CAST(budget_ceiling AS INTEGER)
+    AND budget_ceiling <= 9007199254740991
+  ),
   currency       TEXT NOT NULL DEFAULT 'USD',
   status         TEXT NOT NULL DEFAULT 'ACTIVE'
                  CHECK (status IN ('ACTIVE', 'REVOKED', 'EXPIRED')),
@@ -46,23 +56,29 @@ CREATE INDEX IF NOT EXISTS idx_delegations_agent ON delegations(agent_id);
 
 -- A transaction between a buyer agent and a worker agent. The `version`
 -- column is the optimistic-concurrency token: every state-changing write must
--- bump it, and callers must compare-and-swap on it. `state` is constrained to
--- the same set as the domain state machine in src/domain/state.ts.
+-- bump it by exactly 1 (enforced by a trigger below), and callers must
+-- compare-and-swap on it. `state` is constrained to the same set as the
+-- domain state machine in src/domain/state.ts. `amount` is immutable once the
+-- transaction is agreed (also enforced by a trigger below).
 CREATE TABLE IF NOT EXISTS transactions (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id      TEXT NOT NULL UNIQUE,
   delegation_id    INTEGER REFERENCES delegations(id),
   buyer_agent_id   INTEGER NOT NULL REFERENCES agents(id),
   worker_agent_id  INTEGER NOT NULL REFERENCES agents(id),
-  amount           INTEGER NOT NULL CHECK (amount >= 0 AND amount = CAST(amount AS INTEGER)),
+  amount           INTEGER NOT NULL CHECK (
+    amount >= 0
+    AND amount = CAST(amount AS INTEGER)
+    AND amount <= 9007199254740991
+  ),
   currency         TEXT NOT NULL DEFAULT 'USD',
   state            TEXT NOT NULL DEFAULT 'CREATED'
                    CHECK (state IN (
                      'CREATED', 'AUTHORIZED', 'ACTIVE', 'COMPLETED',
                      'SETTLEMENT_PENDING', 'SETTLED', 'REJECTED', 'EXPIRED',
                      'CANCELLED', 'DISPUTED', 'VERIFICATION_PENDING',
-                     'VERIFICATION_FAILED', 'REFUND_PENDING', 'REFUNDED',
-                     'SETTLEMENT_FAILED'
+                     'VERIFICATION_FAILED', 'REFUND_PENDING', 'REFUND_FAILED',
+                     'REFUNDED', 'SETTLEMENT_FAILED'
                    )),
   version          INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -75,13 +91,51 @@ CREATE INDEX IF NOT EXISTS idx_transactions_worker ON transactions(worker_agent_
 CREATE INDEX IF NOT EXISTS idx_transactions_delegation ON transactions(delegation_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_state ON transactions(state);
 
+-- Database-level guards on transactions. These are the last line of defense
+-- behind the state machine: no prompt, agent, or buggy caller can circumvent
+-- them with a raw UPDATE.
+
+-- Terminal states are absorbing: once SETTLED / REFUNDED / REJECTED /
+-- EXPIRED / CANCELLED, the state may never change again.
+CREATE TRIGGER IF NOT EXISTS transactions_no_state_change_from_terminal
+BEFORE UPDATE ON transactions
+FOR EACH ROW
+WHEN OLD.state IN ('SETTLED', 'REFUNDED', 'REJECTED', 'EXPIRED', 'CANCELLED')
+     AND NEW.state IS NOT OLD.state
+BEGIN
+  SELECT RAISE(ABORT, 'transactions in a terminal state cannot change state');
+END;
+
+-- Optimistic concurrency: every write must bump version by exactly 1, so a
+-- stale compare-and-swap can never win.
+CREATE TRIGGER IF NOT EXISTS transactions_version_must_increment
+BEFORE UPDATE ON transactions
+FOR EACH ROW
+WHEN NEW.version IS NOT OLD.version + 1
+BEGIN
+  SELECT RAISE(ABORT, 'transactions.version must increment by exactly 1');
+END;
+
+-- The agreed amount is immutable: agents may never silently reprice a job.
+CREATE TRIGGER IF NOT EXISTS transactions_amount_immutable
+BEFORE UPDATE ON transactions
+FOR EACH ROW
+WHEN NEW.amount IS NOT OLD.amount
+BEGIN
+  SELECT RAISE(ABORT, 'transactions.amount is immutable');
+END;
+
 -- A reservation of delegation budget against a specific transaction. One
 -- reservation per transaction (UNIQUE). Released or settled only by the server.
 CREATE TABLE IF NOT EXISTS budget_reservations (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   delegation_id  INTEGER NOT NULL REFERENCES delegations(id),
   transaction_id INTEGER NOT NULL UNIQUE REFERENCES transactions(id),
-  amount         INTEGER NOT NULL CHECK (amount >= 0 AND amount = CAST(amount AS INTEGER)),
+  amount         INTEGER NOT NULL CHECK (
+    amount >= 0
+    AND amount = CAST(amount AS INTEGER)
+    AND amount <= 9007199254740991
+  ),
   status         TEXT NOT NULL DEFAULT 'RESERVED'
                  CHECK (status IN ('RESERVED', 'RELEASED', 'SETTLED')),
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -117,9 +171,3 @@ BEFORE DELETE ON audit_events
 BEGIN
   SELECT RAISE(ABORT, 'audit_events is append-only; DELETE is forbidden');
 END;
-
--- Bookkeeping for the migration runner itself.
-CREATE TABLE IF NOT EXISTS _migrations (
-  filename   TEXT PRIMARY KEY,
-  applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);

@@ -1,8 +1,8 @@
 /**
- * Database bootstrap: opening connections, applying migrations, and running
- * the schema. The schema lives in ./schema.sql (canonical current state) and
- * in ./migrations/*.sql (versioned history). The migration runner tracks
- * applied files in the `_migrations` table and is idempotent.
+ * Database bootstrap: opening connections and applying migrations.
+ * Migrations in ./migrations/*.sql are the single source of truth for the
+ * schema. The migration runner tracks applied files in the `_migrations`
+ * table and is idempotent.
  */
 import fs from "node:fs";
 import path from "node:path";

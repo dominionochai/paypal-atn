@@ -20,23 +20,45 @@ no HTTP routes.
   floating-point money anywhere. Rejects negative amounts, non-numeric input,
   and values beyond `Number.MAX_SAFE_INTEGER`.
 - **State machine** (`src/domain/state.ts`) — explicit legal-transition table
-  for the 15 transaction states. `transition(from, to)` throws
-  `IllegalTransitionError` on any move that is not in the table. The machine is
-  extensible (`StateMachine`, `withTransitions`) so separate streaming and
-  escrow machines can be derived from the shared base later.
-- **Database** (`src/db/schema.sql`, `src/db/db.ts`,
-  `src/db/migrations/001_initial.sql`) — SQLite schema for principals, agents,
-  delegations, transactions (with a `version` column for optimistic
-  concurrency), budget reservations, and an append-only audit log. Money is
-  stored as `INTEGER` micro-dollars. `CHECK` constraints reject negative
-  amounts; `UNIQUE` constraints protect external ids; audit
-  `UPDATE`/`DELETE` are blocked by database triggers. A migration runner
-  tracks applied migrations in `_migrations` and is idempotent.
+  for the 16 transaction states (including `REFUND_FAILED`).
+  `transition(from, to)` throws `IllegalTransitionError` on illegal moves and
+  returns `to` on success. The machine is extensible (`StateMachine`,
+  `withTransitions`) so separate streaming and escrow machines can be derived
+  from the shared base later.
+- **Database** (`src/db/migrations/001_initial.sql`, `src/db/db.ts`) — SQLite
+  schema for principals, agents, delegations, transactions (with a `version`
+  column for optimistic concurrency), budget reservations, and an append-only
+  audit log. Money is stored as `INTEGER` micro-dollars. `CHECK` constraints
+  reject negative amounts, non-integers, and values exceeding
+  `Number.MAX_SAFE_INTEGER` (9007199254740991); `UNIQUE` constraints protect
+  external IDs. Database triggers enforce:
+  1. `transactions` in terminal states (`SETTLED`, `REFUNDED`, `REJECTED`,
+     `EXPIRED`, `CANCELLED`) cannot change state.
+  2. `transactions.version` must increment by exactly 1 on every update.
+  3. `transactions.amount` is immutable.
+  4. `audit_events` are append-only (`UPDATE` / `DELETE` blocked).
+  The migration runner applies files from `src/db/migrations/`, tracks applied
+  migrations in `_migrations`, and is idempotent.
 - **Audit** (`src/audit/audit.ts`) — `record(event)` inserts a row *inside the
   caller's transaction* (it does not open one of its own), so an audit event
   commits or rolls back with the business change it describes. There is no
-  update or delete path. Payloads containing secret-bearing keys are rejected
-  before serialization; secrets are never logged.
+  update or delete path. Payloads are thoroughly filtered for secrets using
+  substring fragment matching on normalized keys, exact-match keys for short
+  sensitive identifiers (`pin`, `pan`, `otp`, `cvv`, `cvc`, `ssn`), an allowlist
+  for public verifiable fields (`signature`), string value inspection
+  (rejecting Bearer tokens, JWT-shaped strings, and PEM private key headers),
+  nesting depth limits (max 8), size limits (max 16 KiB), and cycle detection
+  throwing `TypeError`.
+
+## Known limitations
+
+- **Settlement finality**: `SETTLED` is a terminal state, so post-settlement
+  refunds and chargebacks are not modeled in the core state machine yet.
+- **Audit heuristics**: Secret filtering relies on key/value heuristics and
+  pattern matching rather than cryptographic guarantees.
+- **Optimistic Concurrency Write Path**: The `version` column and database trigger
+  enforce version incrementing, but the application-level compare-and-swap
+  query wrappers arrive in a later milestone.
 
 ## What is NOT implemented (yet)
 

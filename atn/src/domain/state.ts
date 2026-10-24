@@ -27,6 +27,7 @@ export const TRANSACTION_STATES = [
   "VERIFICATION_PENDING",
   "VERIFICATION_FAILED",
   "REFUND_PENDING",
+  "REFUND_FAILED",
   "REFUNDED",
   "SETTLEMENT_FAILED",
 ] as const;
@@ -72,12 +73,13 @@ export const BASE_TRANSITIONS: TransitionTable<TransactionState> = {
   AUTHORIZED: dest("ACTIVE", "REJECTED", "EXPIRED", "CANCELLED"),
   ACTIVE: dest("COMPLETED", "VERIFICATION_PENDING", "DISPUTED", "EXPIRED", "CANCELLED"),
   COMPLETED: dest("VERIFICATION_PENDING", "SETTLEMENT_PENDING", "DISPUTED"),
-  VERIFICATION_PENDING: dest("SETTLEMENT_PENDING", "VERIFICATION_FAILED"),
+  VERIFICATION_PENDING: dest("SETTLEMENT_PENDING", "VERIFICATION_FAILED", "DISPUTED", "EXPIRED", "CANCELLED"),
   VERIFICATION_FAILED: dest("REFUND_PENDING", "REJECTED", "DISPUTED"),
   SETTLEMENT_PENDING: dest("SETTLED", "SETTLEMENT_FAILED", "DISPUTED"),
   SETTLEMENT_FAILED: dest("REFUND_PENDING", "REJECTED", "DISPUTED", "SETTLEMENT_PENDING"),
   DISPUTED: dest("REFUND_PENDING", "SETTLEMENT_PENDING", "VERIFICATION_PENDING", "CANCELLED", "REJECTED"),
-  REFUND_PENDING: dest("REFUNDED", "DISPUTED"),
+  REFUND_PENDING: dest("REFUNDED", "REFUND_FAILED", "DISPUTED"),
+  REFUND_FAILED: dest("REFUND_PENDING", "DISPUTED"),
   SETTLED: NONE,
   REJECTED: NONE,
   EXPIRED: NONE,
@@ -111,9 +113,13 @@ export class StateMachine<S extends string = TransactionState> {
     }
   }
 
-  /** Alias of `assertLegal`, named to read naturally at call sites. */
-  transition(from: S, to: S): void {
+  /**
+   * Transition the machine from `from` to `to`. Throws `IllegalTransitionError`
+   * on any move not in the table; otherwise returns `to`.
+   */
+  transition(from: S, to: S): S {
     this.assertLegal(from, to);
+    return to;
   }
 
   /** All states reachable in one legal move from `from`. */

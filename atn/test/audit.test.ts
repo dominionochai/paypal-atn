@@ -134,3 +134,135 @@ describe("audit secret policy", () => {
     expect(count.n).toBe(0);
   });
 });
+
+function buildNesting(depth: number): Record<string, unknown> {
+  let cursor: Record<string, unknown> = {};
+  const root = cursor;
+  for (let i = 0; i < depth; i += 1) {
+    const next: Record<string, unknown> = {};
+    cursor["a"] = next;
+    cursor = next;
+  }
+  return root;
+}
+
+describe("audit secret filter", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = createDatabase(":memory:");
+  });
+
+  it("rejects keys that contain a banned fragment as a substring", () => {
+    const keys = [
+      "delegationToken",
+      "authToken",
+      "apiSecret",
+      "stripeApiKey",
+      "privateKeyPem",
+      "passphrase",
+      "signingKey",
+      "x-api-key",
+      "accessToken",
+      "clientSecret",
+      "refreshToken",
+      "apiKey",
+      "sessionId",
+      "cardNumber",
+      "bankAccount",
+      "mnemonic",
+      "seed",
+      "passwd",
+      "password",
+      "credential",
+      "authorization",
+      "bearer",
+      "cookie",
+      "token",
+    ];
+    for (const key of keys) {
+      expect(() => record(db, baseEvent({ payload: { [key]: "value" } })), key).toThrow(
+        /secret/i,
+      );
+    }
+  });
+
+  it("rejects exact-match sensitive keys but not lookalike substrings", () => {
+    for (const key of ["pin", "pan", "otp", "cvv", "cvc", "ssn"]) {
+      expect(() => record(db, baseEvent({ payload: { [key]: "1234" } })), key).toThrow(
+        /secret/i,
+      );
+    }
+    expect(() =>
+      record(db, baseEvent({ payload: { shipping: "addr", company: "acme" } })),
+    ).not.toThrow();
+  });
+
+  it("allows the signature key even with a token-shaped value", () => {
+    expect(() =>
+      record(
+        db,
+        baseEvent({
+          payload: { signature: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.sig" },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects Bearer-token values regardless of key name", () => {
+    expect(() => record(db, baseEvent({ payload: { header: "Bearer abcdef" } }))).toThrow(
+      /secret|bearer/i,
+    );
+    expect(() => record(db, baseEvent({ payload: { header: "bearer abcdef" } }))).toThrow(
+      /secret|bearer/i,
+    );
+  });
+
+  it("rejects JWT-shaped values regardless of key name", () => {
+    const jwt =
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.sflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    expect(() => record(db, baseEvent({ payload: { ref: jwt } }))).toThrow(/secret|jwt/i);
+  });
+
+  it("rejects PEM private-key headers regardless of key name", () => {
+    expect(() =>
+      record(db, baseEvent({ payload: { cert: "-----BEGIN RSA PRIVATE KEY-----\nMIIE" } })),
+    ).toThrow(/secret|private key/i);
+    expect(() =>
+      record(db, baseEvent({ payload: { cert: "-----BEGIN PRIVATE KEY-----" } })),
+    ).toThrow(/secret|private key/i);
+  });
+
+  it("accepts public PEM headers", () => {
+    expect(() =>
+      record(db, baseEvent({ payload: { cert: "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgk" } })),
+    ).not.toThrow();
+  });
+
+  it("throws TypeError on a circular payload instead of overflowing the stack", () => {
+    interface Node {
+      self?: unknown;
+    }
+    const node: Node = {};
+    node.self = node;
+    expect(() =>
+      record(db, baseEvent({ payload: node as unknown as Record<string, unknown> })),
+    ).toThrow(TypeError);
+  });
+
+  it("rejects payloads nested deeper than 8 levels and accepts exactly 8", () => {
+    expect(() => record(db, baseEvent({ payload: buildNesting(9) }))).toThrow(/nesting/i);
+    expect(() => record(db, baseEvent({ payload: buildNesting(8) }))).not.toThrow();
+  });
+
+  it("rejects serialized payloads larger than 16 KiB", () => {
+    expect(() =>
+      record(db, baseEvent({ payload: { data: "x".repeat(20_000) } })),
+    ).toThrow(RangeError);
+  });
+
+  it("never writes a rejected oversized event to the log", () => {
+    expect(() => record(db, baseEvent({ payload: { data: "x".repeat(20_000) } }))).toThrow();
+    const count = db.prepare("SELECT COUNT(*) AS n FROM audit_events").get() as { n: number };
+    expect(count.n).toBe(0);
+  });
+});

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDatabase, openDatabase, runMigrations, type Database } from "../src/db/db.js";
 import { fromMicro } from "../src/domain/money.js";
-import { BASE_TRANSACTION_MACHINE } from "../src/domain/state.js";
+import { BASE_TRANSACTION_MACHINE, TRANSACTION_STATES } from "../src/domain/state.js";
 
 function seedPrincipalAndAgents(db: Database): { buyerId: number; workerId: number } {
   const principalId = db
@@ -198,7 +198,7 @@ describe("transactions table", () => {
     expect(BASE_TRANSACTION_MACHINE.can("CREATED", "AUTHORIZED")).toBe(true);
   });
 
-  it("rejects an amount that is not a safe integer", () => {
+  it("rejects a non-integer amount", () => {
     const { buyerId, workerId } = seedPrincipalAndAgents(db);
     const delegationId = seedDelegation(db, buyerId, 50_000_000);
     expect(() =>
@@ -229,5 +229,168 @@ describe("openDatabase", () => {
     const db = openDatabase(":memory:");
     expect(() => db.prepare("SELECT * FROM principals").all()).toThrow(/no such table/);
     db.close();
+  });
+});
+
+describe("safe-integer bounds", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = createDatabase(":memory:");
+  });
+
+  it("accepts 9007199254740991 on delegations.budget_ceiling", () => {
+    const { buyerId } = seedPrincipalAndAgents(db);
+    expect(() => seedDelegation(db, buyerId, 9007199254740991)).not.toThrow();
+  });
+
+  it("rejects 9007199254740993 (BigInt) on delegations.budget_ceiling", () => {
+    const { buyerId } = seedPrincipalAndAgents(db);
+    const principal = db
+      .prepare("SELECT principal_id FROM agents WHERE id = ?")
+      .get(buyerId) as { principal_id: number };
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling) VALUES (?, ?, ?, ?)",
+        )
+        .run("del-big", principal.principal_id, buyerId, BigInt(9007199254740993)),
+    ).toThrow(/CHECK/);
+  });
+
+  it("accepts 9007199254740991 on transactions.amount", () => {
+    const { buyerId, workerId } = seedPrincipalAndAgents(db);
+    const delegationId = seedDelegation(db, buyerId, 50_000_000);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO transactions (external_id, delegation_id, buyer_agent_id, worker_agent_id, amount)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run("tx-max", delegationId, buyerId, workerId, 9007199254740991),
+    ).not.toThrow();
+  });
+
+  it("rejects 9007199254740993 (BigInt) on transactions.amount", () => {
+    const { buyerId, workerId } = seedPrincipalAndAgents(db);
+    const delegationId = seedDelegation(db, buyerId, 50_000_000);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO transactions (external_id, delegation_id, buyer_agent_id, worker_agent_id, amount)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run("tx-big", delegationId, buyerId, workerId, BigInt(9007199254740993)),
+    ).toThrow(/CHECK/);
+  });
+
+  it("accepts 9007199254740991 on budget_reservations.amount", () => {
+    const { buyerId, workerId } = seedPrincipalAndAgents(db);
+    const delegationId = seedDelegation(db, buyerId, 50_000_000);
+    const txId = db
+      .prepare(
+        `INSERT INTO transactions (external_id, delegation_id, buyer_agent_id, worker_agent_id, amount)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run("tx-res-max", delegationId, buyerId, workerId, 200)
+      .lastInsertRowid as number;
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO budget_reservations (delegation_id, transaction_id, amount) VALUES (?, ?, ?)",
+        )
+        .run(delegationId, txId, 9007199254740991),
+    ).not.toThrow();
+  });
+
+  it("rejects 9007199254740993 (BigInt) on budget_reservations.amount", () => {
+    const { buyerId, workerId } = seedPrincipalAndAgents(db);
+    const delegationId = seedDelegation(db, buyerId, 50_000_000);
+    const txId = db
+      .prepare(
+        `INSERT INTO transactions (external_id, delegation_id, buyer_agent_id, worker_agent_id, amount)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run("tx-res-big", delegationId, buyerId, workerId, 200)
+      .lastInsertRowid as number;
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO budget_reservations (delegation_id, transaction_id, amount) VALUES (?, ?, ?)",
+        )
+        .run(delegationId, txId, BigInt(9007199254740993)),
+    ).toThrow(/CHECK/);
+  });
+});
+
+describe("state parity with DB", () => {
+  it("accepts every TRANSACTION_STATES value and rejects an unknown one", () => {
+    const db = createDatabase(":memory:");
+    const { buyerId, workerId } = seedPrincipalAndAgents(db);
+    const delegationId = seedDelegation(db, buyerId, 50_000_000);
+    const insert = db.prepare(
+      `INSERT INTO transactions (external_id, delegation_id, buyer_agent_id, worker_agent_id, amount, state)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    for (const state of TRANSACTION_STATES) {
+      expect(() => insert.run(`tx-parity-${state}`, delegationId, buyerId, workerId, 100, state), state).not.toThrow();
+    }
+    expect(() =>
+      insert.run("tx-parity-unknown", delegationId, buyerId, workerId, 100, "REFUND_FAILING"),
+    ).toThrow(/CHECK/);
+    db.close();
+  });
+});
+
+describe("database-level transaction guards", () => {
+  let db: Database;
+  let txId: number;
+  beforeEach(() => {
+    db = createDatabase(":memory:");
+    const { buyerId, workerId } = seedPrincipalAndAgents(db);
+    const delegationId = seedDelegation(db, buyerId, 50_000_000);
+    txId = db
+      .prepare(
+        `INSERT INTO transactions (external_id, delegation_id, buyer_agent_id, worker_agent_id, amount)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run("tx-guard", delegationId, buyerId, workerId, 200)
+      .lastInsertRowid as number;
+  });
+
+  it("allows a legal update (state change, version +1)", () => {
+    expect(() =>
+      db
+        .prepare("UPDATE transactions SET state = 'AUTHORIZED', version = 2 WHERE id = ?")
+        .run(txId),
+    ).not.toThrow();
+  });
+
+  it("aborts changing state from a terminal state", () => {
+    db.prepare("UPDATE transactions SET state = 'SETTLED', version = 2 WHERE id = ?").run(txId);
+    expect(() =>
+      db.prepare("UPDATE transactions SET state = 'ACTIVE', version = 3 WHERE id = ?").run(txId),
+    ).toThrow(/terminal/i);
+  });
+
+  it("aborts if version does not increment by exactly 1", () => {
+    expect(() =>
+      db.prepare("UPDATE transactions SET state = 'AUTHORIZED', version = 1 WHERE id = ?").run(txId),
+    ).toThrow(/version/i);
+    expect(() =>
+      db.prepare("UPDATE transactions SET state = 'AUTHORIZED', version = 3 WHERE id = ?").run(txId),
+    ).toThrow(/version/i);
+  });
+
+  it("aborts if the agreed amount changes", () => {
+    expect(() =>
+      db.prepare("UPDATE transactions SET amount = 500, version = 2 WHERE id = ?").run(txId),
+    ).toThrow(/immutable|amount/i);
+  });
+
+  it("aborts a terminal-state change even when the version is correct", () => {
+    db.prepare("UPDATE transactions SET state = 'REFUNDED', version = 2 WHERE id = ?").run(txId);
+    expect(() =>
+      db.prepare("UPDATE transactions SET state = 'DISPUTED', version = 3 WHERE id = ?").run(txId),
+    ).toThrow(/terminal/i);
   });
 });
