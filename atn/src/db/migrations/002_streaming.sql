@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, payer_agent_id TEXT NOT NULL, payee_agent_id TEXT NOT NULL, payer_public_key TEXT NOT NULL, ceiling INTEGER NOT NULL, spent INTEGER NOT NULL DEFAULT 0, last_nonce INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS vouchers (id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL, nonce INTEGER NOT NULL, cumulative_amount INTEGER NOT NULL, issued_at INTEGER NOT NULL, canonical_payload BLOB NOT NULL, signature TEXT NOT NULL, accepted_at INTEGER NOT NULL, UNIQUE(channel_id, nonce));
+CREATE TABLE IF NOT EXISTS settlements (id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL UNIQUE, amount INTEGER NOT NULL, mode TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, adapter_ref TEXT, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_vouchers_channel ON vouchers(channel_id);
+CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
