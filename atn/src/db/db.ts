@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import BetterSqlite3 from "better-sqlite3";
+import { hardenDatabase } from "./hardening";
 
 export type Database = BetterSqlite3.Database;
 
@@ -16,6 +17,7 @@ const UTC_NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 /** Open a SQLite database with safe defaults. Does not run migrations. */
 export function openDatabase(filename: string): Database {
   const db = new BetterSqlite3(filename);
+  hardenDatabase(db);
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
   if (filename !== ":memory:") {
