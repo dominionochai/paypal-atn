@@ -178,11 +178,13 @@ export function inspectArtifact(input: {
     const hints = input.forbiddenOpcodeHints ?? DEFAULT_FORBIDDEN_HINTS;
     for (const hint of hints) {
       if (hint.length > 0 && bytes.indexOf(Buffer.from(hint, 'utf8')) !== -1) {
-        addReason(reasons, `FORBIDDEN_OP:\${hint}`);
+        addReason(reasons, `FORBIDDEN_OP:${hint}`);
       }
     }
 
     let parsed = false;
+    let bestEffortProducerReason: string | undefined;
+    const bestEffortOpsetReasons: string[] = [];
     if (size === 0) {
       addReason(reasons, 'EMPTY_ARTIFACT');
     } else if (reasons.includes('OVERSIZE')) {
@@ -191,13 +193,13 @@ export function inspectArtifact(input: {
       try {
         const metadata = parseModel(bytes);
         parsed = true;
-        if (metadata.irVersion !== undefined) addReason(reasons, `INFO_IR_VERSION:\${metadata.irVersion}`);
+        if (metadata.irVersion !== undefined) addReason(reasons, `INFO_IR_VERSION:${metadata.irVersion}`);
         if (metadata.producerName !== undefined) {
           const printableName = JSON.stringify(metadata.producerName).slice(0, 128);
-          addReason(reasons, `INFO_PRODUCER_NAME:\${printableName}`);
+          bestEffortProducerReason = `INFO_PRODUCER_NAME:${printableName}`;
         }
         for (const version of metadata.opsetVersions) {
-          addReason(reasons, `INFO_OPSET_VERSION:\${version}`);
+          if (version !== undefined) bestEffortOpsetReasons.push(`INFO_OPSET_VERSION:${version}`);
         }
       } catch (error) {
         addReason(reasons, error instanceof MalformedProtobufError ? 'MALFORMED_PROTOBUF' : 'PARSE_ERROR');
@@ -208,8 +210,13 @@ export function inspectArtifact(input: {
       (reason) => reason === 'OVERSIZE' || reason === 'HASH_MISMATCH' || reason.startsWith('FORBIDDEN_OP:'),
     );
     const hasUncertainty = reasons.some((reason) => !reason.startsWith('INFO_'));
+    const outcome = hasFailure ? 'FAIL' : parsed && !hasUncertainty ? 'PASS' : 'INCONCLUSIVE';
+    if (outcome !== 'FAIL') {
+      if (bestEffortProducerReason !== undefined) addReason(reasons, bestEffortProducerReason);
+      for (const reason of bestEffortOpsetReasons) addReason(reasons, reason);
+    }
     return {
-      outcome: hasFailure ? 'FAIL' : parsed && !hasUncertainty ? 'PASS' : 'INCONCLUSIVE',
+      outcome,
       reasons,
       artifactSha256: digest,
       artifactBytes: size,
