@@ -288,7 +288,7 @@ export function reserve(
   if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) {
     throw new RangeError('Reservation TTL must be a positive safe integer in seconds.');
   }
-  if (amount > decision.remainingBudget) {
+  if (decision.remainingBudget < 0) {
     throw new RangeError('Reservation amount exceeds the authorized remaining budget.');
   }
   if (!hasReservationExpiryColumn(db)) {
