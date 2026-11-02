@@ -1,7 +1,8 @@
+import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { validateVoucher, type ChannelRow, type VoucherInput, type VoucherResult } from './voucher.js';
 import type { PaymentAdapter } from '../payments/adapter.js';
-export interface Db { prepare(sql: string): { run(...a: unknown[]): unknown; get(...a: unknown[]): unknown; all(...a: unknown[]): unknown[] }; exec(sql: string): void; transaction<T extends (...args: never[]) => unknown>(fn: T): T; }
+export type Db = Database;
 export class AlreadySettledError extends Error { constructor(public channelId: string) { super(`channel ${channelId} is already settled`); this.name = 'AlreadySettledError'; } }
 export class UnknownChannelError extends Error { constructor(public channelId: string) { super(`unknown channel ${channelId}`); this.name = 'UnknownChannelError'; } }
 export function openChannel(db: Db, p: { payerAgentId: string; payeeAgentId: string; payerPublicKey: string; ceiling: number; ttlSeconds: number; now?: number }): ChannelRow {
