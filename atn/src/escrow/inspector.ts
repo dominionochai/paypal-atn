@@ -31,6 +31,7 @@ function readVarint(bytes: Buffer, offset: number, end: number): VarintResult {
   for (let index = 0; index < 10; index += 1) {
     if (offset >= end) throw new MalformedProtobufError('Truncated varint');
     const byte = bytes[offset];
+    if (byte === undefined) throw new RangeError('unexpected end of buffer');
     if (index === 9 && (byte & 0xfe) !== 0) {
       throw new MalformedProtobufError('Varint exceeds 64 bits');
     }
@@ -177,7 +178,7 @@ export function inspectArtifact(input: {
     const hints = input.forbiddenOpcodeHints ?? DEFAULT_FORBIDDEN_HINTS;
     for (const hint of hints) {
       if (hint.length > 0 && bytes.indexOf(Buffer.from(hint, 'utf8')) !== -1) {
-        addReason(reasons, `FORBIDDEN_OP:${hint}`);
+        addReason(reasons, `FORBIDDEN_OP:\${hint}`);
       }
     }
 
@@ -190,13 +191,13 @@ export function inspectArtifact(input: {
       try {
         const metadata = parseModel(bytes);
         parsed = true;
-        if (metadata.irVersion !== undefined) addReason(reasons, `INFO_IR_VERSION:${metadata.irVersion}`);
+        if (metadata.irVersion !== undefined) addReason(reasons, `INFO_IR_VERSION:\${metadata.irVersion}`);
         if (metadata.producerName !== undefined) {
           const printableName = JSON.stringify(metadata.producerName).slice(0, 128);
-          addReason(reasons, `INFO_PRODUCER_NAME:${printableName}`);
+          addReason(reasons, `INFO_PRODUCER_NAME:\${printableName}`);
         }
         for (const version of metadata.opsetVersions) {
-          addReason(reasons, `INFO_OPSET_VERSION:${version}`);
+          addReason(reasons, `INFO_OPSET_VERSION:\${version}`);
         }
       } catch (error) {
         addReason(reasons, error instanceof MalformedProtobufError ? 'MALFORMED_PROTOBUF' : 'PARSE_ERROR');
