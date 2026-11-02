@@ -2,22 +2,10 @@ export type PaymentMode = 'SIMULATED' | 'SANDBOX' | 'LIVE';
 export interface ChargeRequest { amount: number; currency: string; idempotencyKey: string; channelId: string; }
 export interface ChargeResult { ref: string; mode: PaymentMode; }
 export interface PaymentAdapter { charge(req: ChargeRequest): Promise<ChargeResult>; }
-
 export class MissingCredentialsError extends Error { constructor(missing: string[]) { super(`missing PayPal credentials: ${missing.join(', ')}`); this.name = 'MissingCredentialsError'; } }
-
 export class PaymentProviderError extends Error { constructor(message: string, public status?: number, public retryable = false) { super(message); this.name = 'PaymentProviderError'; } }
-
-export class SimulatedAdapter implements PaymentAdapter {
-  async charge(req: ChargeRequest): Promise<ChargeResult> { return { ref: `sim_${req.channelId}_${req.idempotencyKey}`, mode: 'SIMULATED' }; }
-}
-
-function microToDecimal(amount: number): string {
-  if (!Number.isSafeInteger(amount) || amount < 0) throw new Error('amount must be a non-negative integer in micro-dollars');
-  const whole = Math.floor(amount / 1_000_000);
-  const frac = amount % 1_000_000;
-  return `${whole}.${frac.toString().padStart(6, '0').slice(0, 2)}`;
-}
-
+export class SimulatedAdapter implements PaymentAdapter { async charge(req: ChargeRequest): Promise<ChargeResult> { return { ref: `sim_${req.channelId}_${req.idempotencyKey}`, mode: 'SIMULATED' }; } }
+export function microToDecimal(amount: number): string { if (!Number.isSafeInteger(amount) || amount < 0) throw new Error('amount must be a non-negative integer in micro-dollars'); const whole = Math.floor(amount / 1000000); const frac = amount % 1000000; return `${whole}.${frac.toString().padStart(6, '0').slice(0, 2)}`; }
 export class SandboxAdapter implements PaymentAdapter {
   constructor(private fetchImpl: typeof fetch = fetch) {}
   async charge(req: ChargeRequest): Promise<ChargeResult> {
