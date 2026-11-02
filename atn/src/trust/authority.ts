@@ -1,6 +1,27 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from '../db/db.js';
 
+interface AgentRow {
+  id: number;
+  revoked_at: number | null;
+  budget_micro: number | null;
+}
+
+interface DelegationRow {
+  id: number;
+  budget_ceiling: number;
+  expires_at: string | null;
+  revoked_at: number | null;
+  scope_json: string | null;
+  counterparty_allowlist_json: string | null;
+}
+
+interface ReservationRow {
+  id: number;
+  status: string;
+  expires_at: number;
+}
+
 export type DenyCode =
   | 'UNKNOWN_AGENT'
   | 'AGENT_REVOKED'
@@ -25,29 +46,8 @@ export interface AuthorityRequest {
   now?: number;
 }
 
-interface AgentRow {
-  id: number;
-  revoked_at: number | null;
-  budget_micro: number | null;
-}
-
-interface DelegationRow {
-  id: number;
-  budget_ceiling: number;
-  expires_at: string | null;
-  revoked_at: number | null;
-  scope_json: string | null;
-  counterparty_allowlist_json: string | null;
-}
-
 interface SumRow {
   total: number | null;
-}
-
-interface ReservationRow {
-  id: number;
-  status: string;
-  expires_at: number;
 }
 
 interface PragmaColumn {
@@ -127,7 +127,7 @@ function findReservation(db: Database, reservationId: string): ReservationRow | 
       WHERE json_extract(e.payload, '$.reservationId') = ?
       ORDER BY e.id DESC
       LIMIT 1`,
-  ).get<ReservationRow>(reservationId);
+  ).get(reservationId) as ReservationRow | undefined;
 }
 
 class AuthorityFailure extends Error {
@@ -147,7 +147,7 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
         `SELECT id, revoked_at, budget_micro
            FROM agents
           WHERE external_id = ?`,
-      ).get<AgentRow>(req.agentId);
+      ).get(req.agentId) as AgentRow | undefined;
 
       if (agent === undefined) {
         return denied('UNKNOWN_AGENT', 'No agent exists for the supplied agentId.');
@@ -166,7 +166,7 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
             AND d.status = 'ACTIVE'
           ORDER BY d.id
           LIMIT 1`,
-      ).get<DelegationRow>(agent.id, req.counterpartyId);
+      ).get(agent.id, req.counterpartyId) as DelegationRow | undefined;
 
       if (delegation === undefined) {
         return denied('DELEGATION_MISSING', 'No active delegation exists for this agent and counterparty.');
@@ -208,7 +208,7 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
         }
       }
 
-      const delegationCommitted = db.prepare(
+      const delegationCommitted = (db.prepare(
         `SELECT
            COALESCE((
              SELECT SUM(t.amount)
@@ -221,15 +221,15 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
                 AND r.status = 'SETTLED'
                 AND r.transaction_id IS NULL
            ), 0) AS total`,
-      ).get<SumRow>(delegation.id, delegation.id)?.total ?? 0;
+      ).get(delegation.id, delegation.id) as SumRow | undefined)?.total ?? 0;
 
-      const delegationReserved = db.prepare(
+      const delegationReserved = (db.prepare(
         `SELECT COALESCE(SUM(amount), 0) AS total
            FROM budget_reservations
           WHERE delegation_id = ?
             AND status = 'RESERVED'
             AND expires_at > ?`,
-      ).get<SumRow>(delegation.id, nowMilliseconds)?.total ?? 0;
+      ).get(delegation.id, nowMilliseconds) as SumRow | undefined)?.total ?? 0;
 
       const delegationAvailable = delegation.budget_ceiling - delegationCommitted - delegationReserved;
       if (req.amount > delegationAvailable) {
@@ -237,7 +237,7 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
       }
 
       if (agent.budget_micro !== null) {
-        const agentCommitted = db.prepare(
+        const agentCommitted = (db.prepare(
           `SELECT
              COALESCE((
                SELECT SUM(t.amount)
@@ -251,7 +251,7 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
                   AND r.status = 'SETTLED'
                   AND r.transaction_id IS NULL
              ), 0) AS total`,
-        ).get<SumRow>(agent.id, agent.id)?.total ?? 0;
+        ).get(agent.id, agent.id) as SumRow | undefined)?.total ?? 0;
         const agentAvailable = agent.budget_micro - agentCommitted;
         if (req.amount > agentAvailable) {
           return denied('BUDGET_EXHAUSTED', 'The requested amount exceeds the agent budget remaining.');
