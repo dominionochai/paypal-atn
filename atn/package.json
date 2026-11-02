@@ -13,7 +13,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "stream:server": "tsx src/streaming/server.ts",
-    "reconcile": "tsx src/payments/reconcile-cli.ts"
+    "reconcile": "tsx src/payments/reconcile-cli.ts",
+    "serve": "tsx src/http/server.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
