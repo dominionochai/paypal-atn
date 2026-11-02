@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import Database from "better-sqlite3";
+import type { Database } from '../db/db.js';
 
 export type DenyCode =
   | 'UNKNOWN_AGENT'
