@@ -1,212 +1,260 @@
-/**
- * Narrow server-side client for the ATN API.
- *
- * Route paths are client-side assumptions until the ATN backend routes are implemented.
- */
+export interface AtnClientOptions {
+  baseUrl: string;
+  authorityId: string;
+  timeoutMs?: number;
+}
 
-export type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue };
-
-export interface RequestAuthorityInput {
-  agentId: string;
-  scope: string;
+export interface OpenChannelRequest {
+  payerAgentId: string;
+  payeeAgentId: string;
+  payerPublicKey: string;
   ceiling: number;
   ttlSeconds: number;
 }
 
-export interface RequestAuthorityResponse {
-  delegationId: string;
-  expiresAt: string;
+export interface OpenChannelResult {
+  channelId: string;
+  ceiling: number;
+  expiresAt: number;
+}
+
+export interface ChannelState {
+  id: string;
+  spent: number;
+  ceiling: number;
+  status: string;
+  lastNonce: number;
+  expiresAt: number;
+}
+
+export interface VoucherPayload {
+  channelId: string;
+  payeeAgentId: string;
+  cumulativeAmount: number;
+  nonce: number;
+  issuedAt: number;
+}
+
+export interface VoucherSubmission {
+  payload: VoucherPayload;
+  signature: string;
+}
+
+export interface VoucherAccepted {
+  ok: true;
+  spent: number;
   ceiling: number;
 }
 
-export interface SpendInput {
-  delegationId: string;
+export interface SettlementResult {
+  channelId: string;
   amount: number;
+  mode: string;
+  adapterRef: string | null;
   idempotencyKey: string;
 }
 
-export interface SpendResponse {
-  ok: boolean;
-  code?: string;
-  receiptRef?: string;
+export class AtnHttpError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly detail: string | undefined;
+
+  constructor(status: number, code: string, detail?: string) {
+    super(code);
+    this.name = "AtnHttpError";
+    this.status = status;
+    this.code = code;
+    this.detail = detail;
+  }
 }
 
-export interface SubmitArtifactInput {
-  escrowId: string;
-  bytes: Uint8Array;
-  metadata: Record<string, JsonValue>;
-}
-
-/**
- * Provisional minimal response contract for submitArtifact. No backend response
- * schema is defined yet; this client currently expects an { ok: boolean } JSON body.
- */
-export interface SubmitArtifactResponse {
-  ok: boolean;
-}
-
-export interface CheckEscrowInput {
-  escrowId: string;
-}
-
-export interface CheckEscrowResponse {
-  status: string;
-  verdict: string;
+export class AtnProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AtnProtocolError";
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseRequestAuthorityResponse(value: unknown): RequestAuthorityResponse {
-  if (
-    !isRecord(value) ||
-    typeof value.delegationId !== "string" ||
-    typeof value.expiresAt !== "string" ||
-    typeof value.ceiling !== "number"
-  ) {
-    throw new TypeError("Invalid ATN requestAuthority response");
+async function readJsonObject(response: Response): Promise<Record<string, unknown>> {
+  let value: unknown;
+  try {
+    value = await response.json();
+  } catch {
+    throw new AtnProtocolError("ATN returned invalid JSON.");
   }
-
-  return {
-    delegationId: value.delegationId,
-    expiresAt: value.expiresAt,
-    ceiling: value.ceiling,
-  };
+  if (!isRecord(value)) {
+    throw new AtnProtocolError("ATN returned a JSON value that is not an object.");
+  }
+  return value;
 }
 
-function parseSpendResponse(value: unknown): SpendResponse {
-  if (!isRecord(value) || typeof value.ok !== "boolean") {
-    throw new TypeError("Invalid ATN spend response");
+function requireString(body: Record<string, unknown>, field: string): string {
+  const value = body[field];
+  if (typeof value !== "string") {
+    throw new AtnProtocolError(`Invalid ATN response: ${field} must be a string.`);
   }
-
-  const response: SpendResponse = { ok: value.ok };
-  if (value.code !== undefined) {
-    if (typeof value.code !== "string") {
-      throw new TypeError("Invalid ATN spend response: code must be a string");
-    }
-    response.code = value.code;
-  }
-  if (value.receiptRef !== undefined) {
-    if (typeof value.receiptRef !== "string") {
-      throw new TypeError("Invalid ATN spend response: receiptRef must be a string");
-    }
-    response.receiptRef = value.receiptRef;
-  }
-
-  return response;
+  return value;
 }
 
-function parseSubmitArtifactResponse(value: unknown): SubmitArtifactResponse {
-  if (!isRecord(value) || typeof value.ok !== "boolean") {
-    throw new TypeError("Invalid ATN submitArtifact response");
+function requireNumber(body: Record<string, unknown>, field: string): number {
+  const value = body[field];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new AtnProtocolError(`Invalid ATN response: ${field} must be a finite number.`);
   }
-
-  return { ok: value.ok };
+  return value;
 }
 
-function parseCheckEscrowResponse(value: unknown): CheckEscrowResponse {
-  if (
-    !isRecord(value) ||
-    typeof value.status !== "string" ||
-    typeof value.verdict !== "string"
-  ) {
-    throw new TypeError("Invalid ATN checkEscrow response");
+function requireNullableString(body: Record<string, unknown>, field: string): string | null {
+  const value = body[field];
+  if (value !== null && typeof value !== "string") {
+    throw new AtnProtocolError(`Invalid ATN response: ${field} must be a string or null.`);
   }
-
-  return { status: value.status, verdict: value.verdict };
+  return value;
 }
 
 export class AtnClient {
-  private readonly fetchImpl: typeof fetch;
-  private readonly baseUrl: URL;
+  private readonly baseUrl: string;
+  private readonly authorityId: string;
+  private readonly timeoutMs: number;
 
-  constructor(fetchImpl: typeof fetch = globalThis.fetch) {
-    const configuredBaseUrl = process.env.ATN_BASE_URL;
-    if (!configuredBaseUrl) {
-      throw new Error("ATN_BASE_URL must be set to use the ATN client");
+  constructor(options: AtnClientOptions) {
+    if (options.baseUrl.trim().length === 0) {
+      throw new TypeError("ATN baseUrl must not be empty.");
     }
-
-    this.baseUrl = new URL(
-      configuredBaseUrl.endsWith("/") ? configuredBaseUrl : `${configuredBaseUrl}/`,
-    );
-    this.fetchImpl = fetchImpl;
+    if (options.authorityId.trim().length === 0) {
+      throw new TypeError("ATN authorityId must not be empty.");
+    }
+    const timeoutMs = options.timeoutMs ?? 10000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new RangeError("ATN timeoutMs must be a positive finite number.");
+    }
+    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.authorityId = options.authorityId;
+    this.timeoutMs = timeoutMs;
   }
 
-  requestAuthority(input: RequestAuthorityInput): Promise<RequestAuthorityResponse> {
-    return this.request(
-      "authority/request",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(input),
-      },
-      parseRequestAuthorityResponse,
+  async openChannel(req: OpenChannelRequest): Promise<OpenChannelResult> {
+    const body = await this.request(
+      "/v1/channels",
+      "POST",
+      201,
+      JSON.stringify({
+        payerAgentId: req.payerAgentId,
+        payeeAgentId: req.payeeAgentId,
+        payerPublicKey: req.payerPublicKey,
+        ceiling: req.ceiling,
+        ttlSeconds: req.ttlSeconds,
+      }),
     );
-  }
-
-  spend(input: SpendInput): Promise<SpendResponse> {
-    return this.request(
-      "spend",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(input),
-      },
-      parseSpendResponse,
-    );
-  }
-
-  submitArtifact(input: SubmitArtifactInput): Promise<SubmitArtifactResponse> {
-    const body = {
-      escrowId: input.escrowId,
-      bytes: Buffer.from(input.bytes).toString("base64"),
-      bytesEncoding: "base64",
-      metadata: input.metadata,
+    return {
+      channelId: requireString(body, "channelId"),
+      ceiling: requireNumber(body, "ceiling"),
+      expiresAt: requireNumber(body, "expiresAt"),
     };
-
-    return this.request(
-      "artifacts",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      },
-      parseSubmitArtifactResponse,
-    );
   }
 
-  checkEscrow(input: CheckEscrowInput): Promise<CheckEscrowResponse> {
-    return this.request(
-      `escrows/${encodeURIComponent(input.escrowId)}`,
-      { method: "GET" },
-      parseCheckEscrowResponse,
+  async getChannel(channelId: string): Promise<ChannelState> {
+    const body = await this.request(
+      `/v1/channels/${encodeURIComponent(channelId)}`,
+      "GET",
+      200,
     );
+    return {
+      id: requireString(body, "id"),
+      spent: requireNumber(body, "spent"),
+      ceiling: requireNumber(body, "ceiling"),
+      status: requireString(body, "status"),
+      lastNonce: requireNumber(body, "lastNonce"),
+      expiresAt: requireNumber(body, "expiresAt"),
+    };
   }
 
-  private async request<Response>(
+  async submitVoucher(
+    channelId: string,
+    voucher: VoucherSubmission,
+  ): Promise<VoucherAccepted> {
+    const body = await this.request(
+      `/v1/channels/${encodeURIComponent(channelId)}/vouchers`,
+      "POST",
+      200,
+      JSON.stringify({
+        payload: {
+          channelId: voucher.payload.channelId,
+          payeeAgentId: voucher.payload.payeeAgentId,
+          cumulativeAmount: voucher.payload.cumulativeAmount,
+          nonce: voucher.payload.nonce,
+          issuedAt: voucher.payload.issuedAt,
+        },
+        signature: voucher.signature,
+      }),
+    );
+    if (body.ok !== true) {
+      throw new AtnProtocolError("Invalid ATN response: ok must be true.");
+    }
+    return {
+      ok: true,
+      spent: requireNumber(body, "spent"),
+      ceiling: requireNumber(body, "ceiling"),
+    };
+  }
+
+  async settleChannel(
+    channelId: string,
+    idempotencyKey: string,
+  ): Promise<SettlementResult> {
+    const body = await this.request(
+      `/v1/channels/${encodeURIComponent(channelId)}/settle`,
+      "POST",
+      200,
+      JSON.stringify({ idempotencyKey }),
+      { "x-atn-authority": this.authorityId },
+    );
+    return {
+      channelId: requireString(body, "channelId"),
+      amount: requireNumber(body, "amount"),
+      mode: requireString(body, "mode"),
+      adapterRef: requireNullableString(body, "adapterRef"),
+      idempotencyKey: requireString(body, "idempotencyKey"),
+    };
+  }
+
+  private async request(
     path: string,
-    init: RequestInit,
-    parse: (value: unknown) => Response,
-  ): Promise<Response> {
-    const response = await this.fetchImpl(new URL(path, this.baseUrl), init);
+    method: "GET" | "POST",
+    expectedStatus: number,
+    body?: string,
+    headers?: Record<string, string>,
+  ): Promise<Record<string, unknown>> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        ...headers,
+      },
+      body,
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    const payload = await readJsonObject(response);
     if (!response.ok) {
-      throw new Error(`ATN request failed with HTTP ${response.status}`);
+      const code = payload.error;
+      if (typeof code !== "string") {
+        throw new AtnProtocolError("Invalid ATN error response: error must be a string.");
+      }
+      const detail = payload.detail;
+      if (detail !== undefined && typeof detail !== "string") {
+        throw new AtnProtocolError("Invalid ATN error response: detail must be a string when present.");
+      }
+      throw new AtnHttpError(response.status, code, detail);
     }
-
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      throw new TypeError("ATN returned invalid JSON");
+    if (response.status !== expectedStatus) {
+      throw new AtnProtocolError(
+        `ATN returned HTTP ${response.status}; expected HTTP ${expectedStatus}.`,
+      );
     }
-
-    return parse(body);
+    return payload;
   }
 }
