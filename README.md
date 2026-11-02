@@ -1,7 +1,6 @@
 # PayPal Autonomous Trust Network (ATN)
 
 An end-to-end Operating System for Autonomous Commerce. Three layers, one platform:
-
 - Layer 1: Identity & Authorization — Proof-of-Agent
 - Layer 2: Real-Time Settlement Rail — Neural Streaming
 - Layer 3: Delivery & Asset Verification — VeriPay Escrow
@@ -11,13 +10,11 @@ An end-to-end Operating System for Autonomous Commerce. Three layers, one platfo
 A complete multi-agent workflow: an Enterprise Market-Research Agent hires a Scraping Agent to pull data, then hires a Data-Science Agent to generate a custom machine learning model.
 
 ### Phase 1: Authentication & Scope Locking (Proof-of-Agent Layer)
-
 - Delegation: the human assigns a budget of $50 to their primary buyer agent (Market-Research AI).
 - Delegation Token Issue: the Market-Research AI needs to call external worker agents. It issues a signed delegation token specifying: Scope (authorized to interact with registered PayPal Merchant Agents only), Ceiling (hard limit of $50), Expiration (30 minutes from issue).
 - Handshake: the agent connects to the PayPal ATN Gateway. the gateway validates the delegation signature, ceiling, expiry, and revocation status. The gateway opens a temporary $50 transaction vault. The human's underlying credit card or master wallet credentials remain completely hidden.
 
 ## Design Notes (Sharp Notes)
-
 - '$50 ceiling + 30 min expiry' is the demo. Make that visible on screen during the pitch — a vault that visibly opens, gets funded, expires. Judges remember what they SEE.
 - 'Human's underlying credit card stays hidden' — the sentence to repeat. It's the whole security story in one line.
 - Multi-agent lifecycle (research agent hires scraper hires data-science) is the right demo — it shows the network, not a single agent.
@@ -59,5 +56,3 @@ When presented as an integrated stack, the system shows how PayPal addresses the
 | How do we know the bot isn't rogue? | Proof-of-Agent Layer | Cryptographic constraints prevent runaway spend or identity theft |
 | How do bots pay for sub-cent compute? | Neural Streaming Layer | Low-overhead WebSocket vouchers settle high-frequency micro-transactions |
 | How do bots verify digital deliverables? | VeriPay Escrow Layer | Programmatic inspection gates release and blocks broken or malformed artifacts |
-
-Source: https://github.com/dominionochai/paypal-atn/blob/main/README.md
