@@ -16,8 +16,8 @@ function readBody(req: IncomingMessage): Promise<BodyResult> {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
         settled = true;
+        req.pause();
         resolve({ ok: false, tooLarge: true });
-        req.destroy();
         return;
       }
       chunks.push(chunk);
