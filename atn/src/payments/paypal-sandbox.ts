@@ -1,21 +1,10 @@
-import {
-  MissingPayPalCredentialsError,
-  PayPalProviderError,
-  PayPalSandboxProvider,
-} from './providers/paypal.js';
+import { PayPalSandboxProvider } from './providers/paypal';
 
 /**
- * Naming/compatibility shim for the verified PayPal sandbox provider.
- * UNVERIFIED without PayPal sandbox credentials; this provider never fakes a
- * successful charge. When supplied credentials omit either PAYPAL_CLIENT_ID
- * or PAYPAL_CLIENT_SECRET, it throws MissingPayPalCredentialsError.
- * This module only re-exports the provider; it does not load environment values.
+ * this is a naming/compat shim over providers/paypal.ts; the sandbox path is UNVERIFIED without real PayPal credentials; it never fakes a successful charge and throws MissingCredentialsError when PAYPAL_CLIENT_ID or PAYPAL_CLIENT_SECRET is absent.
  */
-export {
-  MissingPayPalCredentialsError,
-  PayPalProviderError,
-  PayPalSandboxProvider,
-};
+export { PayPalSandboxProvider };
+export { MissingCredentialsError, PaymentProviderError } from './adapter';
 
 export type PayPalSandboxOptions = ConstructorParameters<
   typeof PayPalSandboxProvider
