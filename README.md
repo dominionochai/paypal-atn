@@ -1,58 +1,106 @@
-# PayPal Autonomous Trust Network (ATN)
-
-An end-to-end Operating System for Autonomous Commerce. Three layers, one platform:
-- Layer 1: Identity & Authorization — Proof-of-Agent
-- Layer 2: Real-Time Settlement Rail — Neural Streaming
-- Layer 3: Delivery & Asset Verification — VeriPay Escrow
-
-## Step-by-Step System Lifecycle
-
-A complete multi-agent workflow: an Enterprise Market-Research Agent hires a Scraping Agent to pull data, then hires a Data-Science Agent to generate a custom machine learning model.
-
-### Phase 1: Authentication & Scope Locking (Proof-of-Agent Layer)
-- Delegation: the human assigns a budget of $50 to their primary buyer agent (Market-Research AI).
-- Delegation Token Issue: the Market-Research AI needs to call external worker agents. It issues a signed delegation token specifying: Scope (authorized to interact with registered PayPal Merchant Agents only), Ceiling (hard limit of $50), Expiration (30 minutes from issue).
-- Handshake: the agent connects to the PayPal ATN Gateway. the gateway validates the delegation signature, ceiling, expiry, and revocation status. The gateway opens a temporary $50 transaction vault. The human's underlying credit card or master wallet credentials remain completely hidden.
-
-## Design Notes (Sharp Notes)
-- '$50 ceiling + 30 min expiry' is the demo. Make that visible on screen during the pitch — a vault that visibly opens, gets funded, expires. Judges remember what they SEE.
-- 'Human's underlying credit card stays hidden' — the sentence to repeat. It's the whole security story in one line.
-- Multi-agent lifecycle (research agent hires scraper hires data-science) is the right demo — it shows the network, not a single agent.
-
-## Problem Statement
-
-When millions of autonomous AI agents start buying goods, subscribing to services, and invoking paid APIs on behalf of humans, traditional anti-fraud systems collapse. Normal anti-fraud looks for human biometrics: mouse wiggles, typing cadence, IP subnet consistency, session cookies, and 2FA SMS prompts. An AI agent running on a cloud server has none of these. If a malicious actor steals an agent's API keys or tricks an LLM via prompt injection, standard systems can't distinguish a legitimate agent instruction from a botnet draining a wallet.
-
-## Core Architecture (proof of concept)
-
-- Proof-of-Agent: acts as a cryptographic OAuth layer for Autonomous AI Agents — deterministic intent and scoping for agent authorization.
-- Neural Streaming: real-time settlement rail for agent payments.
-- VeriPay Escrow: delivery and asset verification before funds release.
-
-Payments run through a simulated adapter and a local SQLite ledger; no live PayPal API calls are made in this build.
-
-## Phase 2: High-Frequency Compute Acquisition (Neural Streaming Layer)
-
-- Connection: the Market-Research AI hires Scraper AI to read 500 web pages. Because this is a high-frequency, low-value task ($0.0002 per page), it routes to the Neural Streaming Engine.
-- WebSocket Channel Open: a WebSocket state channel opens between both agents under the delegation-scoped budget.
-- Micro-Voucher Issuance: as Scraper AI streams scraped page tokens back over the WebSocket, Market-Research AI issues micro-signed payment vouchers every 100 milliseconds ($0.0002 → $0.0004 → $0.0006 ...).
-- Local Channel Balance: neither payment hits PayPal's core database yet. Both agents update their local cryptographic ledger.
-- Session Close & Settlement: after 500 pages, the session closes at $0.10 total. Scraper AI submits the final signed state channel receipt to PayPal. PayPal executes a single $0.10 micro-payout into Scraper AI's balance.
-
-## Phase 3: High-Value Asset Purchase & Inspection (VeriPay Escrow Layer)
-
-- Asset Order: the Market-Research AI takes the scraped raw data and orders a custom prediction model ($25.00) from Data-Science AI. Because this involves a static file asset of significant value, it routes to VeriPay Escrow.
-- Escrow Lock: PayPal places $25.00 from the pre-authorized vault into an isolated escrow holding account.
-- Delivery to Inspection Sandbox: Data-Science AI completes the model and submits the .onnx file payload to the system.
-- Automated AI Inspection: before the funds unlock, the system spins up an isolated sandbox inspector: it loads the delivered model, runs automated validation — validates the model artifact structurally (format, tensor shapes, byte size, and reject-list checks), and scans for malicious code injections.
-- Final Settlement or Refund: if verification passes, the escrow is marked RELEASED and funds are released from the isolated holding balance. If verification fails (e.g., model is broken/hallucinated), the escrow cancels, the $25.00 returns to the user's vault, and Data-Science AI's merchant trust rating drops automatically.
-
-## Why the Integrated System is Unbeatable
-
-When presented as an integrated stack, the system shows how PayPal addresses the entire lifecycle of AI-driven commerce.
-
-| Problem in the AI Economy | Individual Component | System Integration Result |
-|---|---|---|
-| How do we know the bot isn't rogue? | Proof-of-Agent Layer | Cryptographic constraints prevent runaway spend or identity theft |
-| How do bots pay for sub-cent compute? | Neural Streaming Layer | Low-overhead WebSocket vouchers settle high-frequency micro-transactions |
-| How do bots verify digital deliverables? | VeriPay Escrow Layer | Programmatic inspection gates release and blocks broken or malformed artifacts |
+IyBQYXlQYWwgQXV0b25vbW91cyBUcnVzdCBOZXR3b3JrIChBVE4pCgpBbiBl
+bmQtdG8tZW5kIE9wZXJhdGluZyBTeXN0ZW0gZm9yIEF1dG9ub21vdXMgQ29t
+bWVyY2UuIFRocmVlIGxheWVycywgb25lIHBsYXRmb3JtOgoKLSBMYXllciAx
+OiBJZGVudGl0eSAmIEF1dGhvcml6YXRpb24g4oCUIFByb29mLW9mLUFnZW50
+Ci0gTGF5ZXIgMjogUmVhbC1UaW1lIFNldHRsZW1lbnQgUmFpbCDigJQgTmV1
+cmFsIFN0cmVhbWluZwotIExheWVyIDM6IERlbGl2ZXJ5ICYgQXNzZXQgVmVy
+aWZpY2F0aW9uIOKAlCBWZXJpUGF5IEVzY3JvdwoKIyMgU3RlcC1ieS1TdGVw
+IFN5c3RlbSBMaWZlY3ljbGUKCkEgY29tcGxldGUgbXVsdGktYWdlbnQgd29y
+a2Zsb3c6IGFuIEVudGVycHJpc2UgTWFya2V0LVJlc2VhcmNoIEFnZW50IGhp
+cmVzIGEgU2NyYXBpbmcgQWdlbnQgdG8gcHVsbCBkYXRhLCB0aGVuIGhpcmVz
+IGEgRGF0YS1TY2llbmNlIEFnZW50IHRvIGdlbmVyYXRlIGEgY3VzdG9tIG1h
+Y2hpbmUgbGVhcm5pbmcgbW9kZWwuCgojIyMgUGhhc2UgMTogQXV0aGVudGlj
+YXRpb24gJiBTY29wZSBMb2NraW5nIChQcm9vZi1vZi1BZ2VudCBMYXllcikK
+Ci0gRGVsZWdhdGlvbjogdGhlIGh1bWFuIGFzc2lnbnMgYSBidWRnZXQgb2Yg
+JDUwIHRvIHRoZWlyIHByaW1hcnkgYnV5ZXIgYWdlbnQgKE1hcmtldC1SZXNl
+YXJjaCBBSSkuCi0gRGVsZWdhdGlvbiBUb2tlbiBJc3N1ZTogdGhlIE1hcmtl
+dC1SZXNlYXJjaCBBSSBuZWVkcyB0byBjYWxsIGV4dGVybmFsIHdvcmtlciBh
+Z2VudHMuIEl0IGlzc3VlcyBhIHNpZ25lZCBkZWxlZ2F0aW9uIHRva2VuIHNw
+ZWNpZnlpbmc6IFNjb3BlIChhdXRob3JpemVkIHRvIGludGVyYWN0IHdpdGgg
+cmVnaXN0ZXJlZCBQYXlQYWwgTWVyY2hhbnQgQWdlbnRzIG9ubHkpLCBDZWls
+aW5nIChoYXJkIGxpbWl0IG9mICQ1MCksIEV4cGlyYXRpb24gKDMwIG1pbnV0
+ZXMgZnJvbSBpc3N1ZSkuCi0gSGFuZHNoYWtlOiB0aGUgYWdlbnQgY29ubmVj
+dHMgdG8gdGhlIFBheVBhbCBBVE4gR2F0ZXdheS4gdGhlIGdhdGV3YXkgdmFs
+aWRhdGVzIHRoZSBkZWxlZ2F0aW9uIHNpZ25hdHVyZSwgY2VpbGluZywgZXhw
+aXJ5LCBhbmQgcmV2b2NhdGlvbiBzdGF0dXMuIFRoZSBnYXRld2F5IG9wZW5z
+IGEgdGVtcG9yYXJ5ICQ1MCB0cmFuc2FjdGlvbiB2YXVsdC4gVGhlIGh1bWFu
+J3MgdW5kZXJseWluZyBjcmVkaXQgY2FyZCBvciBtYXN0ZXIgd2FsbGV0IGNy
+ZWRlbnRpYWxzIHJlbWFpbiBjb21wbGV0ZWx5IGhpZGRlbi4KCiMjIERlc2ln
+biBOb3RlcyAoU2hhcnAgTm90ZXMpCgotICckNTAgY2VpbGluZyArIDMwIG1p
+biBleHBpcnknIGlzIHRoZSBkZW1vLiBNYWtlIHRoYXQgdmlzaWJsZSBvbiBz
+Y3JlZW4gZHVyaW5nIHRoZSBwaXRjaCDigJQgYSB2YXVsdCB0aGF0IHZpc2li
+bHkgb3BlbnMsIGdldHMgZnVuZGVkLCBleHBpcmVzLiBKdWRnZXMgcmVtZW1i
+ZXIgd2hhdCB0aGV5IFNFRS4KLSAnSHVtYW4ncyB1bmRlcmx5aW5nIGNyZWRp
+dCBjYXJkIHN0YXlzIGhpZGRlbicg4oCUIHRoZSBzZW50ZW5jZSB0byByZXBl
+YXQuIEl0J3MgdGhlIHdob2xlIHNlY3VyaXR5IHN0b3J5IGluIG9uZSBsaW5l
+LgotIE11bHRpLWFnZW50IGxpZmVjeWNsZSAocmVzZWFyY2ggYWdlbnQgaGly
+ZXMgc2NyYXBlciBoaXJlcyBkYXRhLXNjaWVuY2UpIGlzIHRoZSByaWdodCBk
+ZW1vIOKAlCBpdCBzaG93cyB0aGUgbmV0d29yaywgbm90IGEgc2luZ2xlIGFn
+ZW50LgoKIyMgUHJvYmxlbSBTdGF0ZW1lbnQKCldoZW4gbWlsbGlvbnMgb2Yg
+YXV0b25vbW91cyBBSSBhZ2VudHMgc3RhcnQgYnV5aW5nIGdvb2RzLCBzdWJz
+Y3JpYmluZyB0byBzZXJ2aWNlcywgYW5kIGludm9raW5nIHBhaWQgQVBJcyBv
+biBiZWhhbGYgb2YgaHVtYW5zLCB0cmFkaXRpb25hbCBhbnRpLWZyYXVkIHN5
+c3RlbXMgY29sbGFwc2UuIE5vcm1hbCBhbnRpLWZyYXVkIGxvb2tzIGZvciBo
+dW1hbiBiaW9tZXRyaWNzOiBtb3VzZSB3aWdnbGVzLCB0eXBpbmcgY2FkZW5j
+ZSwgSVAgc3VibmV0IGNvbnNpc3RlbmN5LCBzZXNzaW9uIGNvb2tpZXMsIGFu
+ZCAyRkEgU01TIHByb21wdHMuIEFuIEFJIGFnZW50IHJ1bm5pbmcgb24gYSBj
+bG91ZCBzZXJ2ZXIgaGFzIG5vbmUgb2YgdGhlc2UuIElmIGEgbWFsaWNpb3Vz
+IGFjdG9yIHN0ZWFscyBhbiBhZ2VudCdzIEFQSSBrZXlzIG9yIHRyaWNrcyBh
+biBMTE0gdmlhIHByb21wdCBpbmplY3Rpb24sIHN0YW5kYXJkIHN5c3RlbXMg
+Y2FuJ3QgZGlzdGluZ3Vpc2ggYSBsZWdpdGltYXRlIGFnZW50IGluc3RydWN0
+aW9uIGZyb20gYSBib3RuZXQgZHJhaW5pbmcgYSB3YWxsZXQuCgojIyBDb3Jl
+IEFyY2hpdGVjdHVyZSAocHJvb2Ygb2YgY29uY2VwdCkKCi0gUHJvb2Ytb2Yt
+QWdlbnQ6IGFjdHMgYXMgYSBjcnlwdG9ncmFwaGljIE9BdXRoIGxheWVyIGZv
+ciBBdXRvbm9tb3VzIEFJIEFnZW50cyDigJQgZGV0ZXJtaW5pc3RpYyBpbnRl
+bnQgYW5kIHNjb3BpbmcgZm9yIGFnZW50IGF1dGhvcml6YXRpb24uCi0gTmV1
+cmFsIFN0cmVhbWluZzogcmVhbC10aW1lIHNldHRsZW1lbnQgcmFpbCBmb3Ig
+YWdlbnQgcGF5bWVudHMuCi0gVmVyaVBheSBFc2Nyb3c6IGRlbGl2ZXJ5IGFu
+ZCBhc3NldCB2ZXJpZmljYXRpb24gYmVmb3JlIGZ1bmRzIHJlbGVhc2UuCgpQ
+YXltZW50cyBydW4gdGhyb3VnaCBhIHNpbXVsYXRlZCBhZGFwdGVyIGFuZCBh
+IGxvY2FsIFNRTGl0ZSBsZWRnZXI7IG5vIGxpdmUgUGF5UGFsIEFQSSBjYWxs
+cyBhcmUgbWFkZSBpbiB0aGlzIGJ1aWxkLgoKIyMgUGhhc2UgMjogSGlnaC1G
+cmVxdWVuY3kgQ29tcHV0ZSBBY3F1aXNpdGlvbiAoTmV1cmFsIFN0cmVhbWlu
+ZyBMYXllcikKCi0gQ29ubmVjdGlvbjogdGhlIE1hcmtldC1SZXNlYXJjaCBB
+SSBoaXJlcyBTY3JhcGVyIEFJIHRvIHJlYWQgNTAwIHdlYiBwYWdlcy4gQmVj
+YXVzZSB0aGlzIGlzIGEgaGlnaC1mcmVxdWVuY3ksIGxvdy12YWx1ZSB0YXNr
+ICgkMC4wMDAyIHBlciBwYWdlKSwgaXQgcm91dGVzIHRvIHRoZSBOZXVyYWwg
+U3RyZWFtaW5nIEVuZ2luZS4KLSBXZWJTb2NrZXQgQ2hhbm5lbCBPcGVuOiBh
+IFdlYlNvY2tldCBzdGF0ZSBjaGFubmVsIG9wZW5zIGJldHdlZW4gYm90aCBh
+Z2VudHMgdW5kZXIgdGhlIGRlbGVnYXRpb24tc2NvcGVkIGJ1ZGdldC4KLSBN
+aWNyby1Wb3VjaGVyIElzc3VhbmNlOiBhcyBTY3JhcGVyIEFJIHN0cmVhbXMg
+c2NyYXBlZCBwYWdlIHRva2VucyBiYWNrIG92ZXIgdGhlIFdlYlNvY2tldCwg
+TWFya2V0LVJlc2VhcmNoIEFJIGlzc3VlcyBtaWNyby1zaWduZWQgcGF5bWVu
+dCB2b3VjaGVycyBldmVyeSAxMDAgbWlsbGlzZWNvbmRzICgkMC4wMDAyIOKG
+kiAkMC4wMDA0IOKGkiAkMC4wMDA2IC4uLikuCi0gTG9jYWwgQ2hhbm5lbCBC
+YWxhbmNlOiBuZWl0aGVyIHBheW1lbnQgaGl0cyBQYXlQYWwncyBjb3JlIGRh
+dGFiYXNlIHlldC4gQm90aCBhZ2VudHMgdXBkYXRlIHRoZWlyIGxvY2FsIGNy
+eXB0b2dyYXBoaWMgbGVkZ2VyLgotIFNlc3Npb24gQ2xvc2UgJiBTZXR0bGVt
+ZW50OiBhZnRlciA1MDAgcGFnZXMsIHRoZSBzZXNzaW9uIGNsb3NlcyBhdCAk
+MC4xMCB0b3RhbC4gU2NyYXBlciBBSSBzdWJtaXRzIHRoZSBmaW5hbCBzaWdu
+ZWQgc3RhdGUgY2hhbm5lbCByZWNlaXB0IHRvIFBheVBhbC4gUGF5UGFsIGV4
+ZWN1dGVzIGEgc2luZ2xlICQwLjEwIG1pY3JvLXBheW91dCBpbnRvIFNjcmFw
+ZXIgQUkncyBiYWxhbmNlLgoKIyMgUGhhc2UgMzogSGlnaC1WYWx1ZSBBc3Nl
+dCBQdXJjaGFzZSAmIEluc3BlY3Rpb24gKFZlcmlQYXkgRXNjcm93IExheWVy
+KQoKLSBBc3NldCBPcmRlcjogdGhlIE1hcmtldC1SZXNlYXJjaCBBSSB0YWtl
+cyB0aGUgc2NyYXBlZCByYXcgZGF0YSBhbmQgb3JkZXJzIGEgY3VzdG9tIHBy
+ZWRpY3Rpb24gbW9kZWwgKCQyNS4wMCkgZnJvbSBEYXRhLVNjaWVuY2UgQUku
+IEJlY2F1c2UgdGhpcyBpbnZvbHZlcyBhIHN0YXRpYyBmaWxlIGFzc2V0IG9m
+IHNpZ25pZmljYW50IHZhbHVlLCBpdCByb3V0ZXMgdG8gVmVyaVBheSBFc2Ny
+b3cuCi0gRXNjcm93IExvY2s6IFBheVBhbCBwbGFjZXMgJDI1LjAwIGZyb20g
+dGhlIHByZS1hdXRob3JpemVkIHZhdWx0IGludG8gYW4gaXNvbGF0ZWQgZXNj
+cm93IGhvbGRpbmcgYWNjb3VudC4KLSBEZWxpdmVyeSB0byBJbnNwZWN0aW9u
+IFNhbmRib3g6IERhdGEtU2NpZW5jZSBBSSBjb21wbGV0ZXMgdGhlIG1vZGVs
+IGFuZCBzdWJtaXRzIHRoZSAub25ueCBmaWxlIHBheWxvYWQgdG8gdGhlIHN5
+c3RlbS4KLSBBdXRvbWF0ZWQgQUkgSW5zcGVjdGlvbjogYmVmb3JlIHRoZSBm
+dW5kcyB1bmxvY2ssIHRoZSBzeXN0ZW0gc3BpbnMgdXAgYW4gaXNvbGF0ZWQg
+c2FuZGJveCBpbnNwZWN0b3I6IGl0IGxvYWRzIHRoZSBkZWxpdmVyZWQgbW9k
+ZWwsIHJ1bnMgYXV0b21hdGVkIHZhbGlkYXRpb24g4oCUIHZhbGlkYXRlcyB0
+aGUgbW9kZWwgYXJ0aWZhY3Qgc3RydWN0dXJhbGx5IChmb3JtYXQsIHRlbnNv
+ciBzaGFwZXMsIGJ5dGUgc2l6ZSwgYW5kIHJlamVjdC1saXN0IGNoZWNrcyks
+IGFuZCBzY2FucyBmb3IgbWFsaWNpb3VzIGNvZGUgaW5qZWN0aW9ucy4KLSBG
+aW5hbCBTZXR0bGVtZW50IG9yIFJlZnVuZDogaWYgdmVyaWZpY2F0aW9uIHBh
+c3NlcywgdGhlIGVzY3JvdyBpcyBtYXJrZWQgUkVMRUFTRUQgYW5kIGZ1bmRz
+IGFyZSByZWxlYXNlZCBmcm9tIHRoZSBpc29sYXRlZCBob2xkaW5nIGJhbGFu
+Y2UuIElmIHZlcmlmaWNhdGlvbiBmYWlscyAoZS5nLiwgbW9kZWwgaXMgYnJv
+a2VuL2hhbGx1Y2luYXRlZCksIHRoZSBlc2Nyb3cgY2FuY2VscywgdGhlICQy
+NS4wMCByZXR1cm5zIHRvIHRoZSB1c2VyJ3Mgd<|...|>
