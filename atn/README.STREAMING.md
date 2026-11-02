@@ -1,49 +1,71 @@
-# M2 Streaming Vouchers and Settlement
+# Streaming (M2)
 
-## What M2 implements
+M2 implements signed, cumulative-payment channels, voucher validation, a WebSocket interface, and channel settlement. Channel amounts are integer micro-dollars. Channel records, accepted vouchers, and settlements are stored in SQLite.
 
-M2 adds SQLite-backed payment channels and accepted vouchers, Ed25519 signing and verification over a canonical binary payload, nonce/replay checks, a WebSocket acknowledgement/state stream, channel closure and settlement, and `SIMULATED` and PayPal `SANDBOX` payment adapters. The server applies database migrations on startup. Run it from the `atn` project directory.
+## Channels and vouchers
 
-## Cumulative voucher format
+Opening a channel records its payer and payee agent IDs, the payer's public key, a positive-integer ceiling, zero initial spend and nonce, `OPEN` status, creation time, and expiry time (`now + ttlSeconds`). The channel API accepts vouchers only while the channel is open and not expired.
 
-A voucher payload contains `channelId`, `payeeAgentId`, `cumulativeAmount` (integer micro-dollars), `nonce`, and `issuedAt` (milliseconds since epoch). Its canonical bytes encode each string as a 4-byte big-endian byte length followed by UTF-8 bytes, then encode each integer as a signed 8-byte big-endian integer. The payer signs those canonical bytes with Ed25519; the signature is transported as base64.
+A voucher payload has exactly these signed fields:
 
-The amount is cumulative: it represents the total amount owed so far, not a new increment. A compliant issuer only advances its cumulative total, so a decrease is structurally impossible; the receiver still rejects a decreasing amount defensively. This avoids adding the same value twice when vouchers are retried or re-sent. Each accepted voucher also advances the channel nonce.
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `channelId` | string | Channel identifier |
+| `payeeAgentId` | string | Intended payee agent |
+| `cumulativeAmount` | number | Cumulative amount in micro-dollars |
+| `nonce` | number | Per-channel ordering/replay value |
+| `issuedAt` | number | Issuance timestamp value |
 
-## Rejection reason codes
+The canonical signed bytes are the concatenation, in this exact order, of `channelId`, `payeeAgentId`, `cumulativeAmount`, `nonce`, and `issuedAt`. Each string is UTF-8 encoded and preceded by its byte length as a 4-byte unsigned big-endian integer. Each numeric value is checked to be a JavaScript safe integer, converted to `BigInt`, and encoded as an 8-byte signed big-endian integer. There are no separators or other fields. The payload is signed and verified with Node.js Ed25519 (`sign`/`verify` with a `null` digest); the signature is represented as base64.
 
-The validator and WebSocket protocol use these exact reason codes:
+Acceptance checks that the channel is `OPEN` and unexpired; payload channel and payee IDs match; the signature verifies against the channel payer public key; the nonce has not already been stored and is greater than the last accepted nonce; and the cumulative amount is at least the channel's current spend, no greater than its ceiling, and no greater than the caller-supplied delegation budget. The signed `issuedAt` value is not separately freshness-checked by the validator; expiry is checked against the channel's `expires_at`.
 
-- `STALE` — expired/future-issued voucher or a nonce that is not newer than the accepted nonce.
-- `REPLAYED` — the `(channel, nonce)` pair already exists.
-- `TAMPERED` — signature verification failed.
-- `OVER_BUDGET` — channel ceiling or delegation budget would be exceeded.
-- `WRONG_PARTY` — channel or payee identity does not match.
-- `NON_MONOTONIC` — cumulative amount is lower than the already-spent amount.
-- `CHANNEL_CLOSED` — channel is not open for voucher acceptance.
-- `UNKNOWN_CHANNEL` — no such channel exists.
+Amounts are cumulative, not per-voucher increments. A successful acceptance sets `spent` to the greater of its previous value and the voucher amount, and rejects any voucher whose amount is below current `spent`. Thus, once an amount has been accepted, no subsequent accepted voucher can lower it: a decrease is structurally excluded by the acceptance predicate and state update, rather than being repaired by summing or subtracting vouchers.
 
-## Settlement and payment adapters
+### Rejection reason codes
 
-Settlement is idempotent by key: settling again with the same idempotency key returns the existing settlement row and does not call the adapter/charge again. Reusing that key for a different channel is an error. A different key on an already settled channel throws `AlreadySettledError` (the `AlreadySettled` condition).
+The validator returns the first applicable reason in its check order; an absent channel is handled before voucher validation. The WebSocket layer also emits the protocol-level codes listed below.
 
-Payment adapter modes are `SIMULATED` / `SANDBOX` / `LIVE`. `SimulatedAdapter` returns a synthetic reference. `SandboxAdapter` uses PayPal's sandbox OAuth/order/capture endpoints and throws `MissingCredentialsError` when credentials are missing; it does not fake a successful payment. PayPal sandbox path is **UNVERIFIED** unless real PayPal sandbox credentials were used to exercise it.
+| Exact code | Trigger |
+| --- | --- |
+| `UNKNOWN_CHANNEL` | No channel exists for the requested channel ID. |
+| `CHANNEL_CLOSED` | The channel status is not `OPEN`. |
+| `STALE` | The channel has expired, or the voucher nonce is less than or equal to the last accepted nonce. |
+| `WRONG_PARTY` | The voucher channel ID differs from the channel ID, or its payee agent ID differs from the channel payee. |
+| `TAMPERED` | Voucher signature verification fails. |
+| `REPLAYED` | The `(channel_id, nonce)` already exists; a database uniqueness conflict is also reported as replay. |
+| `NON_MONOTONIC` | `cumulativeAmount` is below the channel's current `spent`. |
+| `OVER_BUDGET` | `cumulativeAmount` exceeds the channel ceiling or the supplied delegation budget. |
+| `BAD_MESSAGE` | A WebSocket message is invalid JSON or does not have the expected voucher message shape. |
+| `INTERNAL` | A WebSocket handler catches an internal exception, including a channel that disappears after acceptance. |
+
+Nonce checking is per channel: accepted nonces must increase strictly beyond `last_nonce`, and the migration additionally declares `UNIQUE(channel_id, nonce)` on vouchers. A duplicate accepted nonce is therefore rejected even if it races the in-memory/order check.
+
+## WebSocket streaming
+
+`stream:server` starts the WebSocket server. Its port is `PORT` or `8787` by default; `DELEGATION_BUDGET` defaults to `Number.MAX_SAFE_INTEGER` and must be a non-negative safe integer. Clients send JSON messages of the form `{"type":"voucher","channelId":"…","voucher":{"payload":{"channelId":"…","payeeAgentId":"…","cumulativeAmount":123,"nonce":1,"issuedAt":1700000000000},"signature":"base64"}}`. On acceptance, the sender receives an `ack` with the channel's updated `spent` and `ceiling`; connected watchers for that channel receive a `state` message with `spent`, `ceiling`, and `status`. Rejections are returned to the sender as `reject` messages with the validation code and detail.
+
+## Settlement
+
+Settlement charges the channel's current cumulative `spent` in USD through the supplied payment adapter, stores the settlement amount, mode, idempotency key, and adapter reference, marks the channel `SETTLED`, and records a settlement audit event. Reusing an idempotency key for the same channel returns the existing settlement row. Reusing that key for a different channel throws an error; settling an already-settled channel with a different key throws `AlreadySettled`.
+
+The payment adapter supports `SIMULATED` and `SANDBOX` paths. `SIMULATED` is offline and returns a deterministic simulated reference; this is not evidence of a real transfer. `SANDBOX` uses the PayPal sandbox API path and requires `PAYPAL_CLIENT_ID` and `PAYPAL_CLIENT_SECRET`; absent credentials cause `MissingCredentialsError` rather than a fabricated success. The sandbox path is **UNVERIFIED** unless it was exercised with real sandbox credentials. No claim of a verified PayPal sandbox transaction is made here.
 
 ## Not implemented
 
-- Escrow / ONNX inspector.
+- Escrow.
+- ONNX artifact inspection.
 - HTTP routes.
-- PayPal LIVE mode.
+- PayPal LIVE payments.
 
 ## Commands
 
-Run these commands from `atn/`:
+Run these commands from the repository root:
 
 ```sh
+cd atn
 npm install
 npm test
 npm run typecheck
 npm run stream:server
 ```
-
-The streaming server reads `PORT` (default `8787`), `ATN_DB_PATH` (default `./atn.db`), and `DELEGATION_BUDGET` (default `Number.MAX_SAFE_INTEGER`, in micro-dollars). It applies migrations before listening. `npm run stream:server` starts a WebSocket server; it does not provide HTTP application routes.
