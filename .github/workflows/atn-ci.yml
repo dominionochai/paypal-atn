@@ -1,0 +1,26 @@
+name: ATN CI
+on:
+  push:
+    branches: [main, '**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: atn/package-lock.json
+      - run: npm ci
+        working-directory: atn
+      - run: npm run typecheck --if-present
+        working-directory: atn
+      - run: npm test --if-present
+        working-directory: atn
