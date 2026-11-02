@@ -1,8 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 import type { Database } from 'better-sqlite3';
 import { openChannel, getChannel, acceptVoucher, settleChannel, AlreadySettledError, UnknownChannelError } from '../streaming/channel.js';
 import type { VoucherInput } from '../streaming/voucher.js';
 import { SimulatedAdapter } from '../payments/adapter.js';
+import { createEscrow, fundEscrow, inspectEscrow, refundEscrow } from '../escrow/escrow.js';
+import type { EscrowRow } from '../escrow/escrow.js';
 
 export interface RouteInput {
   method: string;
@@ -115,6 +118,84 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
           if (e instanceof AlreadySettledError) return json(409, { error: 'ALREADY_SETTLED', detail });
           if (e instanceof UnknownChannelError) return json(404, { error: 'NOT_FOUND', detail });
           throw e;
+        }
+      }
+    }
+
+    if (method === 'POST' && segments.length === 2 && segments[0] === 'v1' && segments[1] === 'escrows') {
+      const parsed = parseJsonBody(body);
+      if (!parsed) return bad('body must be a JSON object');
+      const { payerAgentId, payeeAgentId, amount } = parsed;
+      if (!nonEmptyString(payerAgentId)) return bad('payerAgentId must be a non-empty string');
+      if (!nonEmptyString(payeeAgentId)) return bad('payeeAgentId must be a non-empty string');
+      if (!positiveInt(amount)) return bad('amount must be a positive integer in micro-dollars');
+      const currency = parsed.currency === undefined ? 'USD' : parsed.currency;
+      if (!nonEmptyString(currency)) return bad('currency must be a non-empty string');
+      const artifactRef = parsed.artifactRef === undefined ? `escrow_${randomUUID()}` : parsed.artifactRef;
+      if (artifactRef !== null && typeof artifactRef !== 'string') return bad('artifactRef must be a string or null');
+      const idempotencyKey = parsed.idempotencyKey === undefined ? randomUUID() : parsed.idempotencyKey;
+      if (!nonEmptyString(idempotencyKey)) return bad('idempotencyKey must be a non-empty string');
+      const row = createEscrow(db, { payerAgentId, payeeAgentId, amount, currency, artifactRef, idempotencyKey });
+      return json(201, { escrowId: row.id, amount: row.amount, status: row.status });
+    }
+
+    if (segments.length >= 3 && segments[0] === 'v1' && segments[1] === 'escrows') {
+      const escrowId = segments[2] as string;
+      const escrow = db.prepare('SELECT * FROM escrows WHERE id = ?').get(escrowId) as EscrowRow | undefined;
+      if (!escrow) return json(404, { error: 'NOT_FOUND', detail: 'unknown escrow' });
+
+      if (method === 'GET' && segments.length === 3) {
+        return json(200, {
+          id: escrow.id,
+          payerAgentId: escrow.payer_agent_id,
+          payeeAgentId: escrow.payee_agent_id,
+          amount: escrow.amount,
+          currency: escrow.currency,
+          status: escrow.status,
+        });
+      }
+
+      if (method === 'POST' && segments.length === 4 && segments[3] === 'fund') {
+        const row = await fundEscrow(db, escrowId, new SimulatedAdapter());
+        return json(200, { id: row.id, status: row.status });
+      }
+
+      if (method === 'POST' && segments.length === 4 && segments[3] === 'inspect') {
+        const parsed = parseJsonBody(body);
+        if (!parsed) return bad('body must be a JSON object');
+        const artifactBase64 = parsed.artifactBase64;
+        const base64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+        if (!nonEmptyString(artifactBase64) || !base64Pattern.test(artifactBase64)) {
+          return bad('artifactBase64 must be valid base64');
+        }
+        const artifactBytes = Buffer.from(artifactBase64, 'base64');
+        if (artifactBytes.length === 0 || artifactBytes.toString('base64') !== artifactBase64) {
+          return bad('artifactBase64 must be valid base64');
+        }
+        const declaredMediaType = parsed.declaredMediaType === undefined ? 'application/octet-stream' : parsed.declaredMediaType;
+        if (!nonEmptyString(declaredMediaType)) return bad('declaredMediaType must be a non-empty string');
+        const result = inspectEscrow(db, escrowId, artifactBytes, declaredMediaType);
+        return json(200, { outcome: result.outcome, reasons: result.reasons });
+      }
+
+      if (method === 'POST' && segments.length === 4 && segments[3] === 'release') {
+        if (escrow.status === 'RELEASED') return json(200, { id: escrow.id, status: 'RELEASED' });
+        if (escrow.status === 'CREATED' || escrow.status === 'FUNDED') {
+          return json(409, { error: 'NOT_RELEASABLE', detail: 'inspection has not passed' });
+        }
+        return json(409, {
+          error: 'NOT_RELEASABLE',
+          detail: `escrow is not releasable in status ${escrow.status}`,
+        });
+      }
+
+      if (method === 'POST' && segments.length === 4 && segments[3] === 'refund') {
+        try {
+          const row = refundEscrow(db, escrowId);
+          return json(200, { id: row.id, status: row.status });
+        } catch (e) {
+          const detail = e instanceof Error ? e.message : String(e);
+          return json(409, { error: 'NOT_REFUNDABLE', detail });
         }
       }
     }
