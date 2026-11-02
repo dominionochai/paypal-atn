@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "stream:server": "tsx src/streaming/server.ts"
+    "stream:server": "tsx src/streaming/server.ts",
+    "reconcile": "tsx src/payments/reconcile-cli.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
