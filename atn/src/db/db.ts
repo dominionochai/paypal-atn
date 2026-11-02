@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import BetterSqlite3 from "better-sqlite3";
-import { hardenDatabase } from './hardening.js';
+import { hardenDatabase } from "./hardening.js";
 
 export type Database = BetterSqlite3.Database;
 
@@ -38,7 +38,7 @@ function resolveMigrationsDir(): string {
         return dir;
       }
     } catch {
-      // ignore and try the next candidate
+      // try the next candidate
     }
   }
   throw new Error("unable to locate db/migrations directory");
@@ -52,12 +52,9 @@ function resolveMigrationsDir(): string {
 export function runMigrations(db: Database, migrationsDir?: string): void {
   const dir = migrationsDir ?? resolveMigrationsDir();
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS _migrations (
-      filename   TEXT PRIMARY KEY,
-      applied_at TEXT NOT NULL DEFAULT (${UTC_NOW})
-    )
-  `);
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS _migrations (\n      filename   TEXT PRIMARY KEY,\n      applied_at TEXT NOT NULL DEFAULT (${UTC_NOW})\n    )`
+  );
 
   const appliedRows = db
     .prepare("SELECT filename FROM _migrations")
