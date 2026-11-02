@@ -2,7 +2,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import type { Database } from 'better-sqlite3';
 import { openChannel, getChannel, acceptVoucher, settleChannel, AlreadySettledError, UnknownChannelError } from '../streaming/channel.js';
 import type { VoucherInput } from '../streaming/voucher.js';
-import { SandboxAdapter } from '../payments/adapter.js';
+import { SimulatedAdapter } from '../payments/adapter.js';
 
 export interface RouteInput {
   method: string;
@@ -102,7 +102,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         const idempotencyKey = parsed.idempotencyKey;
         if (!nonEmptyString(idempotencyKey)) return bad('idempotencyKey must be a non-empty string');
         try {
-          const settlement = await settleChannel(db, channelId, idempotencyKey, new SandboxAdapter());
+          const settlement = await settleChannel(db, channelId, idempotencyKey, new SimulatedAdapter());
           return json(200, {
             channelId: settlement.channel_id,
             amount: settlement.amount,
