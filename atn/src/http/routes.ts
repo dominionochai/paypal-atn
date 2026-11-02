@@ -1,22 +1,16 @@
 import type { IncomingHttpHeaders } from 'node:http';
-import type { Database } from 'better-sqlite3';
-import { openChannel, getChannel, acceptVoucher, settleChannel, AlreadySettledError, UnknownChannelError } from '../streaming/channel.js';
-import type { VoucherInput } from '../streaming/voucher.js';
-import { SimulatedPaymentProvider } from '../payments/providers/simulated.js';
+import { openChannel, getChannel, acceptVoucher, settleChannel, AlreadySettledError, UnknownChannelError } from '../streaming/channel';
+import type { VoucherInput } from '../streaming/voucher';
+import { SimulatedPaymentProvider } from '../payments/providers/simulated';
 
-export interface RouteInput {
-  method: string;
-  path: string;
-  headers: IncomingHttpHeaders;
-  body: Buffer;
-  db: Database;
-  delegationBudget: number;
+export interface Db {
+  prepare(sql: string): { run(...a: unknown[]): unknown; get(...a: unknown[]): unknown; all(...a: unknown[]): unknown[] };
+  exec(sql: string): void;
+  transaction<T>(fn: () => T): T;
 }
 
-export interface RouteOutput {
-  status: number;
-  body: unknown;
-}
+export interface RouteInput { method: string; path: string; headers: IncomingHttpHeaders; body: Buffer; db: Db; delegationBudget: number; }
+export interface RouteOutput { status: number; body: unknown; }
 
 const json = (status: number, body: unknown): RouteOutput => ({ status, body });
 const bad = (detail: string): RouteOutput => json(400, { error: 'BAD_REQUEST', detail });
@@ -27,18 +21,11 @@ function parseJsonBody(body: Buffer): Record<string, unknown> | null {
     const parsed: unknown = JSON.parse(body.toString('utf8'));
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
     return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-function nonEmptyString(v: unknown): v is string {
-  return typeof v === 'string' && v.length > 0;
-}
-
-function positiveInt(v: unknown): v is number {
-  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
-}
+function nonEmptyString(v: unknown): v is string { return typeof v === 'string' && v.length > 0; }
+function positiveInt(v: unknown): v is number { return typeof v === 'number' && Number.isSafeInteger(v) && v > 0; }
 
 export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
   const { method, path, headers, body, db } = input;
@@ -63,14 +50,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       if (!channel) return json(404, { error: 'NOT_FOUND', detail: 'unknown channel' });
 
       if (method === 'GET' && segments.length === 3) {
-        return json(200, {
-          id: channel.id,
-          spent: channel.spent,
-          ceiling: channel.ceiling,
-          status: channel.status,
-          lastNonce: channel.last_nonce,
-          expiresAt: channel.expires_at,
-        });
+        return json(200, { id: channel.id, spent: channel.spent, ceiling: channel.ceiling, status: channel.status, lastNonce: channel.last_nonce, expiresAt: channel.expires_at });
       }
 
       if (method === 'POST' && segments.length === 4 && segments[3] === 'vouchers') {
@@ -94,26 +74,17 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       if (method === 'POST' && segments.length === 4 && segments[3] === 'settle') {
         const rawAuthority = headers['x-atn-authority'];
         const authority = Array.isArray(rawAuthority) ? rawAuthority[0] : rawAuthority;
-        if (!nonEmptyString(authority) || authority !== channel.payee_agent_id) {
-          return json(403, { error: 'FORBIDDEN', detail: 'authority does not match channel payee' });
-        }
+        if (!nonEmptyString(authority) || authority !== channel.payee_agent_id) return json(403, { error: 'FORBIDDEN', detail: 'authority does not match channel payee' });
         const parsed = parseJsonBody(body);
         if (!parsed) return bad('body must be a JSON object');
         const idempotencyKey = parsed.idempotencyKey;
         if (!nonEmptyString(idempotencyKey)) return bad('idempotencyKey must be a non-empty string');
         try {
           const settlement = await settleChannel(db, channelId, idempotencyKey, new SimulatedPaymentProvider());
-          return json(200, {
-            channelId: settlement.channel_id,
-            amount: settlement.amount,
-            mode: settlement.mode,
-            adapterRef: settlement.adapter_ref,
-            idempotencyKey: settlement.idempotency_key,
-          });
+          return json(200, { channelId: settlement.channel_id, amount: settlement.amount, mode: settlement.mode, adapterRef: settlement.adapter_ref, idempotencyKey: settlement.idempotency_key });
         } catch (e) {
-          const detail = e instanceof Error ? e.message : String(e);
-          if (e instanceof AlreadySettledError) return json(409, { error: 'ALREADY_SETTLED', detail });
-          if (e instanceof UnknownChannelError) return json(404, { error: 'NOT_FOUND', detail });
+          if (e instanceof AlreadySettledError) return json(409, { error: 'ALREADY_SETTLED', detail: e.message });
+          if (e instanceof UnknownChannelError) return json(404, { error: 'NOT_FOUND', detail: e.message });
           throw e;
         }
       }
@@ -122,7 +93,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
     return json(404, { error: 'NOT_FOUND' });
   } catch (e) {
     const detail = e instanceof Error ? e.message : 'unexpected error';
-    if (process.env.NODE_ENV !== 'production') process.stderr.write(`atn http error: ${detail}\n`);
+    if (process.env.NODE_ENV !== 'production') process.stderr.write(`atn http error: ${detail}\\n`);
     return json(500, { error: 'INTERNAL' });
   }
 }
