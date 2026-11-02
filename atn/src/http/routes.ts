@@ -2,7 +2,7 @@ import type { IncomingHttpHeaders } from 'node:http';
 import type { Database } from 'better-sqlite3';
 import { openChannel, getChannel, acceptVoucher, settleChannel, AlreadySettledError, UnknownChannelError } from '../streaming/channel.js';
 import type { VoucherInput } from '../streaming/voucher.js';
-import { SimulatedPaymentProvider } from '../payments/providers/simulated.js';
+import { SandboxAdapter } from '../payments/adapter.js';
 
 export interface RouteInput {
   method: string;
@@ -102,7 +102,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         const idempotencyKey = parsed.idempotencyKey;
         if (!nonEmptyString(idempotencyKey)) return bad('idempotencyKey must be a non-empty string');
         try {
-          const settlement = await settleChannel(db, channelId, idempotencyKey, new SimulatedPaymentProvider());
+          const settlement = await settleChannel(db, channelId, idempotencyKey, new SandboxAdapter());
           return json(200, {
             channelId: settlement.channel_id,
             amount: settlement.amount,
@@ -122,7 +122,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
     return json(404, { error: 'NOT_FOUND' });
   } catch (e) {
     const detail = e instanceof Error ? e.message : 'unexpected error';
-    if (process.env.NODE_ENV !== 'production') process.stderr.write(`atn http error: ${detail}\n`);
+    if (process.env.NODE_ENV !== 'production') process.stderr.write(`atn http error: ${detail}\\n`);
     return json(500, { error: 'INTERNAL' });
   }
 }
