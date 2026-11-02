@@ -5,129 +5,125 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hardenDatabase } from '../src/db/hardening.js';
-import { authorize, reserve, commit, release, reserveAndCommit } from '../src/trust/authority.js';
+import { authorize, commit, release, reserve, reserveAndCommit } from '../src/trust/authority.js';
 
-type SqlValue = string | number | bigint | Buffer | null;
-type AgentSeed = { id?: string; revokedAt?: string | null; budgetMicro?: number };
+type AgentSeed = {
+  externalId?: string;
+  principalExternalId?: string;
+  revokedAt?: number | null;
+  budgetMicro?: number | null;
+};
 type DelegationSeed = {
-  id?: string;
-  agentId?: string;
+  externalId?: string;
+  agentExternalId?: string;
   counterparty?: string;
   budgetCeiling?: number;
-  status?: string;
-  expiresAt?: number | string;
+  status?: 'ACTIVE' | 'REVOKED' | 'EXPIRED';
+  expiresAt?: string | null;
   scope?: string[];
   counterpartyAllowlist?: string[];
-  revokedAt?: string | null;
+  revokedAt?: number | null;
 };
 type TrustRequest = {
   agentId: string;
-  delegationId: string;
   action: string;
-  counterparty: string;
-  amountMicro: number;
-  now: number;
+  counterpartyId: string;
+  amount: number;
+  now?: number;
 };
-type TableColumn = { name: string };
-type ReservationRow = Record<string, unknown>;
+type ReservationRow = { id: number; status: string; amount: number; expires_at: number };
 
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/db/migrations');
-const defaultNow = 1_800_000_000_000;
 const defaultAction = 'invoice.pay';
 const defaultCounterparty = 'merchant-1';
 const defaultAgentId = 'agent-1';
-const defaultDelegationId = 'delegation-1';
-const defaultCeiling = 5_000_000;
+const defaultBudgetCeiling = 5_000_000;
+const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 
 let db: Database.Database;
 let tempDir: string;
 
-function insertOrExplain(sql: string, columns: readonly string[], values: readonly SqlValue[]): void {
-  try {
-    db.prepare(sql).run(...values);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`SQL failed: ${sql}; columns: ${columns.join(', ')}; cause: ${detail}`, { cause: error });
-  }
+function principalId(externalId: string): number {
+  const existing = db.prepare('SELECT id FROM principals WHERE external_id = ?').get(externalId) as { id: number } | undefined;
+  if (existing) return existing.id;
+  const inserted = db.prepare('INSERT INTO principals (external_id, name) VALUES (?, ?)').run(externalId, externalId);
+  return Number(inserted.lastInsertRowid);
 }
 
-function tableColumns(table: string): string[] {
-  const rows = db.prepare(`PRAGMA table_info('${table}')`).all() as TableColumn[];
-  return rows.map((row) => row.name);
+function seedAgent(seed: AgentSeed = {}): { id: number; externalId: string } {
+  const externalId = seed.externalId ?? defaultAgentId;
+  const ownerId = principalId(seed.principalExternalId ?? 'principal-1');
+  const inserted = db.prepare(`
+    INSERT INTO agents (external_id, principal_id, name, revoked_at, budget_micro)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(externalId, ownerId, externalId, seed.revokedAt ?? null, seed.budgetMicro ?? 10_000_000);
+  return { id: Number(inserted.lastInsertRowid), externalId };
 }
 
-function seedAgent(seed: AgentSeed = {}): string {
-  const id = seed.id ?? defaultAgentId;
-  const columns = ['id', 'revoked_at', 'budget_micro'];
-  const sql = `INSERT INTO agents (${columns.join(', ')}) VALUES (?, ?, ?)`;
-  insertOrExplain(sql, columns, [id, seed.revokedAt ?? null, seed.budgetMicro ?? 10_000_000]);
-  return id;
-}
-
-function seedDelegation(seed: DelegationSeed = {}): string {
-  const id = seed.id ?? defaultDelegationId;
-  const agentId = seed.agentId ?? defaultAgentId;
-  const available = tableColumns('delegations');
-  const partyColumn = available.includes('payee') ? 'payee' : 'counterparty';
-  if (!available.includes(partyColumn)) {
-    throw new Error(`SQL not executed: delegations lacks payee/counterparty; columns: ${available.join(', ')}`);
-  }
-  const columns = [
-    'id', 'agent_id', partyColumn, 'budget_ceiling', 'status', 'expires_at',
-    'scope_json', 'counterparty_allowlist_json', 'revoked_at',
-  ];
-  const values: SqlValue[] = [
-    id,
-    agentId,
-    seed.counterparty ?? defaultCounterparty,
-    seed.budgetCeiling ?? defaultCeiling,
-    seed.status ?? 'active',
-    seed.expiresAt ?? 2_000_000_000_000,
-    JSON.stringify({ actions: seed.scope ?? [defaultAction] }),
-    JSON.stringify(seed.counterpartyAllowlist ?? [defaultCounterparty]),
+function seedDelegation(seed: DelegationSeed = {}): number {
+  const agentExternalId = seed.agentExternalId ?? defaultAgentId;
+  const agent = db.prepare('SELECT id FROM agents WHERE external_id = ?').get(agentExternalId) as { id: number } | undefined;
+  if (!agent) throw new Error(`Cannot seed delegation: agent ${agentExternalId} does not exist`);
+  const counterparty = seed.counterparty ?? defaultCounterparty;
+  const principal = principalId(counterparty);
+  const inserted = db.prepare(`
+    INSERT INTO delegations (
+      external_id, principal_id, agent_id, budget_ceiling, currency, status,
+      expires_at, scope_json, counterparty_allowlist_json, revoked_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    seed.externalId ?? 'delegation-1',
+    principal,
+    agent.id,
+    seed.budgetCeiling ?? defaultBudgetCeiling,
+    'USD',
+    seed.status ?? 'ACTIVE',
+    seed.expiresAt === undefined ? new Date((nowSeconds() + 31_536_000) * 1000).toISOString() : seed.expiresAt,
+    JSON.stringify(seed.scope ?? [defaultAction]),
+    JSON.stringify(seed.counterpartyAllowlist ?? [counterparty]),
     seed.revokedAt ?? null,
-  ];
-  const sql = `INSERT INTO delegations (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;
-  insertOrExplain(sql, columns, values);
-  return id;
+  );
+  return Number(inserted.lastInsertRowid);
 }
 
-function seedReservation(id: string, agentId: string, delegationId: string, amountMicro: number, status: string): void {
-  const available = tableColumns('budget_reservations');
-  const valueByColumn = new Map<string, SqlValue>([
-    ['id', id], ['reservation_id', id], ['agent_id', agentId], ['delegation_id', delegationId],
-    ['amount_micro', amountMicro], ['amount', amountMicro], ['status', status],
-    ['created_at', new Date(defaultNow).toISOString()],
-    ['updated_at', new Date(defaultNow).toISOString()],
-    ['expires_at', new Date(defaultNow + 60_000).toISOString()],
-  ]);
-  const columns = available.filter((column) => valueByColumn.has(column));
-  const values = columns.map((column) => valueByColumn.get(column) ?? null);
-  const sql = `INSERT INTO budget_reservations (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;
-  insertOrExplain(sql, columns, values);
+function seedReservation(
+  delegationId: number,
+  amount: number,
+  status: 'RESERVED' | 'RELEASED' | 'SETTLED' | 'EXPIRED',
+): number {
+  const inserted = db.prepare(`
+    INSERT INTO budget_reservations (delegation_id, amount, status, expires_at)
+    VALUES (?, ?, ?, ?)
+  `).run(delegationId, amount, status, (nowSeconds() + 3_600) * 1000);
+  return Number(inserted.lastInsertRowid);
 }
 
 function request(overrides: Partial<TrustRequest> = {}): TrustRequest {
   return {
     agentId: defaultAgentId,
-    delegationId: defaultDelegationId,
     action: defaultAction,
-    counterparty: defaultCounterparty,
-    amountMicro: 1_000_000,
-    now: defaultNow,
+    counterpartyId: defaultCounterparty,
+    amount: 1_000_000,
+    now: nowSeconds(),
     ...overrides,
   };
 }
 
 function latestReservation(): ReservationRow {
-  const row = db.prepare('SELECT * FROM budget_reservations ORDER BY rowid DESC LIMIT 1').get() as ReservationRow | undefined;
-  if (row === undefined) throw new Error('Expected a budget_reservations row, but none was written');
+  const row = db.prepare('SELECT id, status, amount, expires_at FROM budget_reservations ORDER BY id DESC LIMIT 1').get() as ReservationRow | undefined;
+  if (!row) throw new Error('Expected a budget_reservations row, but none was written');
   return row;
 }
 
 function reservationId(row: ReservationRow): string {
-  const value = row.id ?? row.reservation_id;
-  if (typeof value !== 'string') throw new Error('Reservation row has no string id/reservation_id');
+  const event = db.prepare(`
+    SELECT payload FROM audit_events
+    WHERE entity_type = 'budget_reservation' AND entity_id = ? AND event = 'reservation.reserved'
+    ORDER BY id DESC LIMIT 1
+  `).get(row.id) as { payload: string } | undefined;
+  if (!event) throw new Error(`No reservation.reserved audit event exists for row ${row.id}`);
+  const value = (JSON.parse(event.payload) as { reservationId?: unknown }).reservationId;
+  if (typeof value !== 'string') throw new Error('Reservation audit payload has no string reservationId');
   return value;
 }
 
@@ -138,8 +134,14 @@ function auditEventCount(): number {
 
 function remainingBudget(input: TrustRequest): number {
   const result = authorize(db, input);
-  if (typeof result.remainingBudget !== 'number') throw new Error('authorize did not return numeric remainingBudget');
+  if (!result.allowed) throw new Error(`Authorization was denied: ${result.code}`);
   return result.remainingBudget;
+}
+
+function authorizeAllowed(input: TrustRequest = request()): Extract<ReturnType<typeof authorize>, { allowed: true }> {
+  const result = authorize(db, input);
+  if (!result.allowed) throw new Error(`Authorization was denied: ${result.code}`);
+  return result;
 }
 
 describe('trust authority', () => {
@@ -147,6 +149,7 @@ describe('trust authority', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atn-trust-'));
     const dbPath = path.join(tempDir, 'trust.sqlite');
     db = new Database(dbPath);
+    db.pragma('foreign_keys = ON');
     const migrations = fs.readdirSync(migrationsDir).filter((name) => name.endsWith('.sql')).sort();
     for (const migration of migrations) db.exec(fs.readFileSync(path.join(migrationsDir, migration), 'utf8'));
   });
@@ -158,49 +161,51 @@ describe('trust authority', () => {
 
   it('allows a valid in-scope delegation and returns the remaining budget', () => {
     seedAgent();
-    seedDelegation();
-    seedReservation('released-history', defaultAgentId, defaultDelegationId, 1, 'released');
+    const delegation = seedDelegation();
+    seedReservation(delegation, 1, 'RELEASED');
     const result = authorize(db, request());
     expect(result.allowed).toBe(true);
-    expect(result.remainingBudget).toBe(4_000_000);
+    expect(result.allowed ? result.remainingBudget : undefined).toBe(4_000_000);
   });
 
   it('denies an unknown agent with UNKNOWN_AGENT', () => {
-    seedDelegation({ agentId: 'missing-agent' });
+    seedAgent();
+    seedDelegation();
     const result = authorize(db, request({ agentId: 'missing-agent' }));
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('UNKNOWN_AGENT');
+    expect(result.allowed ? undefined : result.code).toBe('UNKNOWN_AGENT');
   });
 
   it('denies a revoked agent with AGENT_REVOKED', () => {
-    seedAgent({ revokedAt: '2026-01-01T00:00:00.000Z' });
+    seedAgent({ revokedAt: 1 });
     seedDelegation();
     const result = authorize(db, request());
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('AGENT_REVOKED');
+    expect(result.allowed ? undefined : result.code).toBe('AGENT_REVOKED');
   });
 
   it('denies a missing delegation with DELEGATION_MISSING', () => {
     seedAgent();
     const result = authorize(db, request());
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('DELEGATION_MISSING');
+    expect(result.allowed ? undefined : result.code).toBe('DELEGATION_MISSING');
   });
 
   it('denies an expired delegation using the supplied now with DELEGATION_EXPIRED', () => {
     seedAgent();
-    seedDelegation({ expiresAt: defaultNow - 1 });
-    const result = authorize(db, request({ now: defaultNow }));
+    const now = nowSeconds();
+    seedDelegation({ expiresAt: new Date((now - 1) * 1000).toISOString() });
+    const result = authorize(db, request({ now }));
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('DELEGATION_EXPIRED');
+    expect(result.allowed ? undefined : result.code).toBe('DELEGATION_EXPIRED');
   });
 
   it('denies a revoked delegation with DELEGATION_REVOKED', () => {
     seedAgent();
-    seedDelegation({ revokedAt: '2026-01-01T00:00:00.000Z' });
+    seedDelegation({ revokedAt: 1 });
     const result = authorize(db, request());
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('DELEGATION_REVOKED');
+    expect(result.allowed ? undefined : result.code).toBe('DELEGATION_REVOKED');
   });
 
   it('denies a counterparty missing from the allowlist with COUNTERPARTY_DENIED', () => {
@@ -208,7 +213,7 @@ describe('trust authority', () => {
     seedDelegation({ counterpartyAllowlist: ['other-merchant'] });
     const result = authorize(db, request());
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('COUNTERPARTY_DENIED');
+    expect(result.allowed ? undefined : result.code).toBe('COUNTERPARTY_DENIED');
   });
 
   it('denies an action missing from scope with SCOPE_DENIED', () => {
@@ -216,7 +221,7 @@ describe('trust authority', () => {
     seedDelegation({ scope: ['invoice.read'] });
     const result = authorize(db, request());
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('SCOPE_DENIED');
+    expect(result.allowed ? undefined : result.code).toBe('SCOPE_DENIED');
   });
 
   it('denies an amount above the delegation ceiling with CEILING_EXCEEDED', () => {
@@ -224,26 +229,26 @@ describe('trust authority', () => {
     seedDelegation({ budgetCeiling: 500_000 });
     const result = authorize(db, request());
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('CEILING_EXCEEDED');
+    expect(result.allowed ? undefined : result.code).toBe('CEILING_EXCEEDED');
   });
 
-  it('denies an amount above agent budget with BUDGET_EXHAUSTED', () => {
+  it('denies an amount above the agent budget with BUDGET_EXHAUSTED', () => {
     seedAgent({ budgetMicro: 500_000 });
     seedDelegation({ budgetCeiling: 5_000_000 });
     const result = authorize(db, request());
     expect(result.allowed).toBe(false);
-    expect(result.reason).toBe('BUDGET_EXHAUSTED');
+    expect(result.allowed ? undefined : result.code).toBe('BUDGET_EXHAUSTED');
   });
 
   it('commits a reservation, writes an audit event, and reduces remaining budget', () => {
     seedAgent();
     seedDelegation({ budgetCeiling: 10_000_000 });
     const eventsBefore = auditEventCount();
-    reserve(db, request());
+    const decision = authorizeAllowed();
+    reserve(db, decision, 1_000_000, 60);
     const row = latestReservation();
     commit(db, reservationId(row));
-    const committed = latestReservation();
-    expect(committed.status).toBe('committed');
+    expect(latestReservation().status).toBe('SETTLED');
     expect(auditEventCount()).toBeGreaterThan(eventsBefore);
     expect(remainingBudget(request())).toBe(9_000_000);
   });
@@ -252,8 +257,10 @@ describe('trust authority', () => {
     seedAgent();
     seedDelegation({ budgetCeiling: 10_000_000 });
     const eventsBefore = auditEventCount();
-    reserve(db, request());
-    release(db, reservationId(latestReservation()));
+    const decision = authorizeAllowed();
+    reserve(db, decision, 1_000_000, 60);
+    const row = latestReservation();
+    release(db, reservationId(row));
     expect(remainingBudget(request())).toBe(10_000_000);
     expect(auditEventCount()).toBeGreaterThan(eventsBefore);
   });
@@ -261,9 +268,11 @@ describe('trust authority', () => {
   it('reserve then release restores the budget', () => {
     seedAgent();
     seedDelegation({ budgetCeiling: 10_000_000 });
-    reserve(db, request());
+    const decision = authorizeAllowed();
+    reserve(db, decision, 1_000_000, 60);
+    const row = latestReservation();
     const beforeRelease = remainingBudget(request());
-    release(db, reservationId(latestReservation()));
+    release(db, reservationId(row));
     expect(beforeRelease).toBe(9_000_000);
     expect(remainingBudget(request())).toBe(10_000_000);
   });
@@ -272,8 +281,8 @@ describe('trust authority', () => {
     seedAgent();
     seedDelegation({ budgetCeiling: 10_000_000 });
     const eventsBefore = auditEventCount();
-    reserveAndCommit(db, request());
-    expect(latestReservation().status).toBe('committed');
+    reserveAndCommit(db, authorizeAllowed(), 1_000_000, 60);
+    expect(latestReservation().status).toBe('SETTLED');
     expect(auditEventCount()).toBeGreaterThan(eventsBefore);
     expect(remainingBudget(request())).toBe(9_000_000);
   });
@@ -286,33 +295,49 @@ describe('trust authority', () => {
       const input = request();
       const result = authorize(db, input);
       if (result.allowed) {
-        reserve(db, input);
+        reserve(db, result, input.amount, 60);
         successes += 1;
       }
     }
-    const sum = db.prepare("SELECT COALESCE(SUM(amount_micro), 0) AS total FROM budget_reservations WHERE status = 'reserved'")
-      .get() as { total: number };
+    const sum = db.prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM budget_reservations WHERE status = 'RESERVED'").get() as { total: number };
     expect(successes).toBe(10);
     expect(sum.total).toBeLessThanOrEqual(10_000_000);
   });
 
   it('hardens SQLite with WAL, foreign keys, trusted schema disabled, and enforced foreign keys', () => {
     hardenDatabase(db);
-    const journal = db.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
-    const foreignKeys = db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number };
-    const trustedSchema = db.prepare('PRAGMA trusted_schema').get() as { trusted_schema: number };
-    expect(journal.journal_mode.toLowerCase()).toBe('wal');
-    expect(foreignKeys.foreign_keys).toBe(1);
-    expect(trustedSchema.trusted_schema).toBe(0);
+    const journal = db.pragma('journal_mode', { simple: true }) as string;
+    const foreignKeys = db.pragma('foreign_keys', { simple: true }) as number;
+    const trustedSchema = db.pragma('trusted_schema', { simple: true }) as number;
+    expect(journal.toLowerCase()).toBe('wal');
+    expect(foreignKeys).toBe(1);
+    expect(trustedSchema).toBe(0);
 
-    const error = (() => {
-      try {
-        seedDelegation({ id: 'orphan-delegation', agentId: 'agent-does-not-exist' });
-      } catch (caught) {
-        return caught;
-      }
-      return undefined;
-    })();
+    const temporaryAgentId = seedAgent({ externalId: 'temporary-agent' }).id;
+    db.prepare('DELETE FROM agents WHERE id = ?').run(temporaryAgentId);
+    const principal = principalId('orphan-principal');
+    let error: unknown;
+    try {
+      db.prepare(`
+        INSERT INTO delegations (
+          external_id, principal_id, agent_id, budget_ceiling, currency, status,
+          expires_at, scope_json, counterparty_allowlist_json, revoked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'orphan-delegation',
+        principal,
+        temporaryAgentId,
+        1,
+        'USD',
+        'ACTIVE',
+        null,
+        JSON.stringify([defaultAction]),
+        JSON.stringify([defaultCounterparty]),
+        null,
+      );
+    } catch (caught) {
+      error = caught;
+    }
     expect(error).toBeInstanceOf(Error);
     expect(error instanceof Error ? error.message : '').toMatch(/FOREIGN KEY constraint failed/i);
   });
