@@ -1,14 +1,14 @@
 /**
- * Database bootstrap: opening connectioncy band applying migrations.
-* Migrations in ./migrations/*.sql are the single source of truth for the
-* schema. The migration runner tracks applied files in the `_migrations`
+ * Database bootstrap: opening a connection and applying migrations.
+ * Migrations in ./migrations/*.sql are the single source of truth for the
+ * schema. The migration runner tracks applied files in the `_migrations`
  * table and is idempotent.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import BetterSqlite3 from "better-sqlite3";
-import { hardenDatabase } from "./hardening.js";
+import { hardenDatabase } from './hardening.js';
 
 export type Database = BetterSqlite3.Database;
 
@@ -46,7 +46,7 @@ function resolveMigrationsDir(): string {
 
 /**
  * Apply every pending migration in `migrationsDir` (defaults to the bundled
- * ./migrations). Each migration runs inside its own transaction and is
+ * `./migrations`). Each migration runs inside its own transaction and is
  * recorded in `_migrations`; applying twice is a no-op.
  */
 export function runMigrations(db: Database, migrationsDir?: string): void {
@@ -64,7 +64,8 @@ export function runMigrations(db: Database, migrationsDir?: string): void {
     .all() as ReadonlyArray<{ readonly filename: string }>;
   const applied = new Set(appliedRows.map((row) => row.filename));
 
-  const files = fs    .readdirSync(dir)
+  const files = fs
+    .readdirSync(dir)
     .filter((f) => f.endsWith(".sql"))
     .sort();
 
@@ -73,7 +74,7 @@ export function runMigrations(db: Database, migrationsDir?: string): void {
       continue;
     }
     const sql = fs.readFileSync(path.join(dir, file), "utf8");
-    const apply = db.transaction() => {
+    const apply = db.transaction(() => {
       db.exec(sql);
       db.prepare("INSERT INTO _migrations (filename) VALUES (?)").run(file);
     });
