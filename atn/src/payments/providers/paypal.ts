@@ -69,6 +69,9 @@ export function decimalToMicros(value: unknown): number {
     throw new TypeError('PayPal amount must be a non-negative decimal with at most six fractional digits');
   }
   const [whole, fraction = ''] = value.split('.');
+  if (whole === undefined) {
+    throw new PayPalProviderError('expected value missing from PayPal response', undefined, false, false, true);
+  }
   const micros = BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, '0'));
   if (micros > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError('PayPal amount exceeds the safe integer micro-dollar range');
   return Number(micros);
