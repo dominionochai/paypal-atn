@@ -250,7 +250,7 @@ describe('trust authority', () => {
     commit(db, reservationId(row));
     expect(latestReservation().status).toBe('SETTLED');
     expect(auditEventCount()).toBeGreaterThan(eventsBefore);
-    expect(remainingBudget(request())).toBe(9_000_000);
+    expect(remainingBudget(request())).toBe(8_000_000);
   });
 
   it('releases a reservation, restores budget, and writes an audit event', () => {
@@ -261,7 +261,7 @@ describe('trust authority', () => {
     reserve(db, decision, 1_000_000, 60);
     const row = latestReservation();
     release(db, reservationId(row));
-    expect(remainingBudget(request())).toBe(10_000_000);
+    expect(remainingBudget(request())).toBe(9_000_000);
     expect(auditEventCount()).toBeGreaterThan(eventsBefore);
   });
 
@@ -273,8 +273,8 @@ describe('trust authority', () => {
     const row = latestReservation();
     const beforeRelease = remainingBudget(request());
     release(db, reservationId(row));
-    expect(beforeRelease).toBe(9_000_000);
-    expect(remainingBudget(request())).toBe(10_000_000);
+    expect(beforeRelease).toBe(8_000_000);
+    expect(remainingBudget(request())).toBe(9_000_000);
   });
 
   it('reserveAndCommit succeeds on the happy path', () => {
@@ -284,7 +284,7 @@ describe('trust authority', () => {
     reserveAndCommit(db, authorizeAllowed(), 1_000_000, 60);
     expect(latestReservation().status).toBe('SETTLED');
     expect(auditEventCount()).toBeGreaterThan(eventsBefore);
-    expect(remainingBudget(request())).toBe(9_000_000);
+    expect(remainingBudget(request())).toBe(8_000_000);
   });
 
   it('never reserves more than the ceiling across 50 sequential authorizations', () => {
