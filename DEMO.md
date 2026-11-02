@@ -1,23 +1,60 @@
-# ATN local demo
+# ATN Offline Demo
 
-This demo exercises the ATN HTTP API in a local, isolated simulation. It starts the server on loopback with a temporary SQLite database, creates an ephemeral Ed25519 key pair, and sends signed requests to the local server. It is intended to show the request/response flow and the demo's checks for voucher spending, the channel ceiling, replay rejection, settlement authorization, and idempotent settlement. Escrow steps are conditional on the escrow routes being present in the checked-out code.
+This guide describes the local, simulated ATN demo. It is documentation only; no claim is made here that the demo has been run.
 
-## Run it
+## Prerequisites
 
-From the repository root:
+From the repository root, install the project dependencies:
+
+```sh
+npm install
+```
+
+The project must have `tsx` available as a development dependency for the demo script.
+
+## Run
+
+From the repository root, run exactly:
 
 ```sh
 cd atn && node scripts/demo.mjs
 ```
 
-The script starts and stops its local server, removes its temporary database and directory, and reports each step as `PASS`, `FAIL`, or `SKIP`. Requests and responses are printed as the flow runs, followed by a `Summary` table with columns for step, result, and detail. On a successful run, the five cumulative voucher amounts are 10,000,000 through 50,000,000 micro-dollars, and the simulated settlement total is:
+The demo is intended to run offline against simulated behavior. It does not require real PayPal credentials or make PayPal LIVE calls.
 
-```text
-Exact total charged (SIMULATED): $50.000000 (50000000 micro-dollars)
-```
+## What the demo exercises
 
-The conversion is **$50 = 50,000,000 micro-dollars** (1 dollar = 1,000,000 micro-dollars). Optional escrow checks may be reported as skipped if those routes are unavailable. A `FAIL` indicates a failed check; the script exits nonzero if any step fails.
+The local scenarios are intended to demonstrate and report on:
+
+- **Server-side authorization:** authorization is checked by the server-side flow, rather than relying only on a client/UI decision.
+- **Ceiling enforcement:** an operation that exceeds the configured ceiling is rejected.
+- **Replay rejection:** a replayed request is rejected instead of being accepted as a fresh operation.
+- **Settlement idempotency:** repeating a settlement operation does not apply the settlement more than once.
+- **Escrow inspect/release:** the demo attempts to inspect escrow state and exercise the release flow when that endpoint is available.
+- **Offline simulation:** the scenarios use simulated/local behavior and do not contact PayPal LIVE or use real sandbox credentials.
+
+For amount examples, **$50 = 50,000,000 micro-dollars**, using **1 USD = 1,000,000 micro-dollars**.
+
+## Reading the summary
+
+The expected summary is a table with a check name, a status, and optional details, for example:
+
+| Check | Status | Details |
+| --- | --- | --- |
+| Server-side authorization | PASS / FAIL / SKIP | Scenario result or reason |
+| Ceiling enforcement | PASS / FAIL / SKIP | Scenario result or reason |
+| Replay rejection | PASS / FAIL / SKIP | Scenario result or reason |
+| Settlement idempotency | PASS / FAIL / SKIP | Scenario result or reason |
+| Escrow inspect/release | PASS / FAIL / SKIP | Scenario result or reason |
+
+- **PASS** means the expected behavior was observed for that scenario.
+- **FAIL** means the expected behavior was not observed, or the scenario encountered an unexpected error.
+- **SKIP** means a scenario could not or should not be exercised in the current environment; it is not evidence of a pass.
+- If the escrow endpoint returns **404**, report escrow as **SKIP** rather than treating the unavailable endpoint as a successful release or as proof of the escrow behavior.
 
 ## What this does NOT prove
 
-This is a local `SIMULATED`-mode demo, not a live payment test. It does **not** prove PayPal LIVE behavior, and it does not use or touch real PayPal sandbox credentials. It demonstrates only the local simulated API flow; it is not evidence that a payment was sent, that PayPal accepted anything, or that production credentials or integrations work.
+- It does **not** prove PayPal LIVE behavior or use real PayPal sandbox credentials; those remain untouched.
+- It does **not** prove zero-knowledge-proof (ZKP) behavior.
+- It does **not** prove multiprocess locking or concurrency safety across multiple processes.
+- Any demo canonicalization logic is a reconstruction of `signing.ts`, not an authoritative verification of it; the canonicalization must be rechecked against `signing.ts` before relying on it.
