@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch src/http/server.ts",
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -17,7 +17,7 @@
     "serve": "tsx src/http/server.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "12.11.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {

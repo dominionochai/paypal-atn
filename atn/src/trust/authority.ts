@@ -288,9 +288,6 @@ export function reserve(
   if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) {
     throw new RangeError('Reservation TTL must be a positive safe integer in seconds.');
   }
-  if (decision.remainingBudget < 0) {
-    throw new RangeError('Reservation amount exceeds the authorized remaining budget.');
-  }
   if (!hasReservationExpiryColumn(db)) {
     throw new Error('The trust schema migration has not added budget_reservations.expires_at.');
   }
@@ -302,6 +299,22 @@ export function reserve(
   }
 
   return db.transaction(() => {
+    const nowMilliseconds = Date.now();
+    const ceilingRow = db.prepare('SELECT budget_ceiling FROM delegations WHERE id = ?')
+      .get(Number(decision.delegationId)) as { budget_ceiling: number } | undefined;
+    if (ceilingRow === undefined) {
+      throw new RangeError('The delegation for this reservation no longer exists.');
+    }
+    const committed = (db.prepare(
+      "SELECT COALESCE((SELECT SUM(t.amount) FROM transactions AS t WHERE t.delegation_id = ? AND t.state = 'SETTLED'), 0) " +
+      "+ COALESCE((SELECT SUM(r.amount) FROM budget_reservations AS r WHERE r.delegation_id = ? AND r.status = 'SETTLED' AND r.transaction_id IS NULL), 0) AS total",
+    ).get(Number(decision.delegationId), Number(decision.delegationId)) as SumRow | undefined)?.total ?? 0;
+    const held = (db.prepare(
+      "SELECT COALESCE(SUM(amount), 0) AS total FROM budget_reservations WHERE delegation_id = ? AND status = 'RESERVED' AND expires_at > ?",
+    ).get(Number(decision.delegationId), nowMilliseconds) as SumRow | undefined)?.total ?? 0;
+    if (amount > ceilingRow.budget_ceiling - committed - held) {
+      throw new RangeError('Reservation amount exceeds the remaining delegation ceiling.');
+    }
     const insert = db.prepare(
       `INSERT INTO budget_reservations
          (delegation_id, transaction_id, amount, status, expires_at)
@@ -320,7 +333,7 @@ export function reserve(
       decision.agentId,
     );
     return { reservationId, expiresAt };
-  })();
+  }).immediate();
 }
 
 export function commit(db: Database, reservationId: string): void {

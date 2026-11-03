@@ -2,6 +2,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Database } from 'better-sqlite3';
 import { handleRequest } from './routes.js';
 import { corsHeaders, handlePreflight, resolveAllowlist } from './cors.js';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createDatabase } from '../db/db.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_REQUEST_URL_LENGTH = 2048;
@@ -153,4 +156,21 @@ export function startHttpServer(
   const server = createHttpServer(db, options, delegationBudget);
   server.listen(port ?? Number(process.env.PORT ?? 8787), process.env.HOST ?? '127.0.0.1');
   return server;
+}
+
+const entryPath = process.argv[1];
+if (entryPath !== undefined && resolve(entryPath) === resolve(fileURLToPath(import.meta.url))) {
+  const database = createDatabase(process.env.DB_PATH ?? './atn.db');
+  const httpServer = startHttpServer(database);
+  httpServer.on('listening', () => {
+    console.log('ATN HTTP server listening on ' + String(process.env.HOST ?? '127.0.0.1') + ':' + String(process.env.PORT ?? 8787));
+  });
+  const stop = (): void => {
+    httpServer.close(() => {
+      database.close();
+      process.exit(0);
+    });
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
 }

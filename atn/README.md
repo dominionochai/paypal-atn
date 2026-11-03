@@ -1,101 +1,29 @@
-# PayPal ATN — Autonomous Trust Network
+# ATN (core)
 
-The infrastructure layer that lets AI agents transact under verifiable
-authorization.
+Infrastructure for verifiable agent-to-agent payments: integer micro-dollar money, an audited SQLite store,
+signed streaming vouchers, an escrow with a structural model inspector, a payment-adapter layer, and an HTTP gateway.
 
-Lifecycle: **Authorize → Consume → Verify → Settle**.
+## Run
 
-Core principle: agents perform work; ATN controls the transaction. Agents may
-never grant themselves authority, raise their own ceiling, or declare their own
-deliverable verified. All financial and authorization rules are enforced
-server-side and are independent of any prompt.
-
-## What exists (Milestone 0)
-
-This milestone is the **foundation only**. No signing, no vouchers, no escrow,
-no HTTP routes.
-
-- **Money** (`src/domain/money.ts`) — integer micro-dollars (1 USD = 1_000_000).
-  Parsing and formatting use BigInt only; arithmetic is integer-only. No
-  floating-point money anywhere. Rejects negative amounts, non-numeric input,
-  and values beyond `Number.MAX_SAFE_INTEGER`.
-- **State machine** (`src/domain/state.ts`) — explicit legal-transition table
-  for the 16 transaction states (including `REFUND_FAILED`).
-  `transition(from, to)` throws `IllegalTransitionError` on illegal moves and
-  returns `to` on success. The machine is extensible (`StateMachine`,
-  `withTransitions`) so separate streaming and escrow machines can be derived
-  from the shared base later.
-- **Database** (`src/db/migrations/001_initial.sql`, `src/db/db.ts`) — SQLite
-  schema for principals, agents, delegations, transactions (with a `version`
-  column for optimistic concurrency), budget reservations, and an append-only
-  audit log. Money is stored as `INTEGER` micro-dollars. `CHECK` constraints
-  reject negative amounts, non-integers, and values exceeding
-  `Number.MAX_SAFE_INTEGER` (9007199254740991); `UNIQUE` constraints protect
-  external IDs. Database triggers enforce:
-  1. `transactions` in terminal states (`SETTLED`, `REFUNDED`, `REJECTED`,
-     `EXPIRED`, `CANCELLED`) cannot change state.
-  2. `transactions.version` must increment by exactly 1 on every update.
-  3. `transactions.amount` is immutable.
-  4. `audit_events` are append-only (`UPDATE` / `DELETE` blocked).
-  The migration runner applies files from `src/db/migrations/`, tracks applied
-  migrations in `_migrations`, and is idempotent.
-- **Audit** (`src/audit/audit.ts`) — `record(event)` inserts a row *inside the
-  caller's transaction* (it does not open one of its own), so an audit event
-  commits or rolls back with the business change it describes. There is no
-  update or delete path. Payloads are thoroughly filtered for secrets using
-  substring fragment matching on normalized keys, exact-match keys for short
-  sensitive identifiers (`pin`, `pan`, `otp`, `cvv`, `cvc`, `ssn`), an allowlist
-  for public verifiable fields (`signature`), string value inspection
-  (rejecting Bearer tokens, JWT-shaped strings, and PEM private key headers),
-  nesting depth limits (max 8), size limits (max 16 KiB), and cycle detection
-  throwing `TypeError`.
-
-## Known limitations
-
-- **Settlement finality**: `SETTLED` is a terminal state, so post-settlement
-  refunds and chargebacks are not modeled in the core state machine yet.
-- **Audit heuristics**: Secret filtering relies on key/value heuristics and
-  pattern matching rather than cryptographic guarantees.
-- **Optimistic Concurrency Write Path**: The `version` column and database trigger
-  enforce version incrementing, but the application-level compare-and-swap
-  query wrappers arrive in a later milestone.
-
-## What is NOT implemented (yet)
-
-- Signing / ZKP / proof-of-agent authorization.
-- Vouchers, streaming state channels, channel balance ledgers.
-- Escrow locking, sandboxed verification, asset delivery.
-- Settlement or refund execution (the rail itself).
-- HTTP routes, WebSockets, or any network call.
-- Optimistic-concurrency writes (the `version` column exists; the compare-and-
-  swap write path is future work).
-- Budget ceiling enforcement logic (the schema stores ceilings; enforcement is
-  a later milestone).
-- Any persistence of secrets or credentials.
-
-## Assumptions
-
-- All amounts are USD and stored as integer micro-dollars. A dollar string
-  with more than six fractional digits is rejected as unrepresentable.
-- Money values are non-negative; negative balances are not modeled.
-- The 15 states and the base transition table are a server-side contract; the
-  DB `CHECK` on `transactions.state` mirrors the domain enum.
-- The base transition table is intentionally permissive where later machines
-  will restrict: streaming and escrow machines will specialize it.
-- The audit log is tamper-evident at the schema level (no UPDATE/DELETE) but is
-  not cryptographically chained or signed yet.
-- One budget reservation per transaction (UNIQUE `transaction_id`).
-- SQLite is the storage engine for this milestone; nothing in the domain layer
-  depends on it.
-
-## Usage
-
-```sh
+```
 npm install
-npm run typecheck   # strict TypeScript check
-npm test            # vitest suite
-npm run build       # emit dist/ (includes copying SQL migrations)
-npm run dev         # tsx watch on src/index.ts
+npm run typecheck
+npm test
+node scripts/demo.mjs      # starts the server on a free port and runs the end-to-end demo
+npm run serve              # PORT (default 8787), HOST, DB_PATH (default ./atn.db)
 ```
 
-The public surface is re-exported from `src/index.ts`.
+## What exists
+
+- Money: integer micro-dollars only (src/domain/money.ts).
+- Database and audit log with guard triggers (src/db, src/audit); secrets are filtered from audit payloads.
+- Streaming: Ed25519 signed cumulative vouchers over WebSocket, single settlement per channel (src/streaming; README.STREAMING.md).
+- Escrow and inspector: structural ONNX metadata checks, not a sandbox, no model execution (src/escrow; README.ESCROW.md).
+- Payments: simulated adapter by default, PayPal sandbox adapter (never exercised against the real sandbox), idempotency store, reconciliation (README.PAYMENTS.md).
+- Trust authority: delegation lookup, ceiling check, atomic reservations (src/trust; README.TRUST.md).
+- HTTP gateway (src/http).
+
+## Not implemented yet
+
+Signed delegation tokens and request envelopes, vaults with expiry, revocation, hash-chained audit,
+merchant trust scores, LLM-driven agents, and a user interface. The PayPal adapter has not been run against the live sandbox.
