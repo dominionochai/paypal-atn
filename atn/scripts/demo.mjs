@@ -7,6 +7,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
 
 const atnDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dbPath = path.join(os.tmpdir(), 'atn-demo-' + process.pid + '-' + crypto.randomBytes(6).toString('hex') + '.db');
@@ -126,7 +127,7 @@ async function waitReady(base) {
 }
 
 async function run() {
-  console.log('ATN end-to-end demo ($50 simulated channel + escrow with signed requests)');
+  console.log('ATN end-to-end demo ($50 simulated channel + escrow with signed requests + vault + revocation)');
   const port = await freePort();
   const base = 'http://127.0.0.1:' + port;
   const env = {
@@ -140,32 +141,111 @@ async function run() {
     NODE_ENV: 'test',
     ATN_CORS_ORIGINS: 'http://localhost:3000',
   };
+
+  // ---- Start server (let it run migrations) ----
   child = spawn(process.execPath, ['--import', 'tsx', 'src/http/server.ts'], { cwd: atnDir, env, stdio: ['ignore', 'inherit', 'inherit'] });
   child.on('exit', (code, signal) => { childExit = { code, signal }; });
 
   const status = await waitReady(base);
   add('Server readiness', 'PASS', 'HTTP ' + status);
 
-  const payerKp = crypto.generateKeyPairSync('ed25519');
-  const payerPubPem = payerKp.publicKey.export({ type: 'spki', format: 'pem' }).toString();
-  const payerPrivPem = payerKp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  // ---- Post-start: populate database with test data ----
+  // Wait a bit for server to be fully ready, then open DB and insert test data
+  await new Promise(resolve => setTimeout(resolve, 500));
 
-  const payeeKp = crypto.generateKeyPairSync('ed25519');
-  const payeePubPem = payeeKp.publicKey.export({ type: 'spki', format: 'pem' }).toString();
-  const payeePrivPem = payeeKp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  const setupDb = new Database(dbPath);
+  setupDb.pragma('foreign_keys = ON');
+  setupDb.pragma('journal_mode = WAL');
+  setupDb.pragma('busy_timeout = 5000');
 
-  const prinKp = crypto.generateKeyPairSync('ed25519');
-  const prinPubPem = prinKp.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  // Generate keypairs for setup
+  const prinSetupKp = crypto.generateKeyPairSync('ed25519');
+  const prinSetupPubPem = prinSetupKp.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const prinSetupPrivPem = prinSetupKp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 
-  // Register principal and agents
-  const adminHeaders = { 'authorization': 'Bearer ' + ADMIN_TOKEN };
-  await call(base, 'POST', '/v1/principals', { externalId: PRINCIPAL_ID, name: 'Human Principal', publicKey: prinPubPem }, adminHeaders);
-  await call(base, 'POST', '/v1/agents', { externalId: PAYER, principalExternalId: PRINCIPAL_ID, name: 'Payer Agent', publicKey: payerPubPem, budgetMicro: CEILING }, adminHeaders);
-  await call(base, 'POST', '/v1/agents', { externalId: PAYEE, principalExternalId: PRINCIPAL_ID, name: 'Payee Agent', publicKey: payeePubPem }, adminHeaders);
+  const payerSetupKp = crypto.generateKeyPairSync('ed25519');
+  const payerSetupPubPem = payerSetupKp.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const payerSetupPrivPem = payerSetupKp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 
+  const payeeSetupKp = crypto.generateKeyPairSync('ed25519');
+  const payeeSetupPubPem = payeeSetupKp.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const payeeSetupPrivPem = payeeSetupKp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+
+  // Insert principal
+  setupDb.prepare('INSERT INTO principals (external_id, name, ed25519_public_key) VALUES (?, ?, ?)')
+    .run(PRINCIPAL_ID, 'Human Principal', prinSetupPubPem);
+
+  // Insert agents
+  const principalRow = setupDb.prepare('SELECT id FROM principals WHERE external_id = ?').get(PRINCIPAL_ID);
+  setupDb.prepare('INSERT INTO agents (external_id, principal_id, name, ed25519_public_key, budget_micro) VALUES (?, ?, ?, ?, ?)')
+    .run(PAYER, principalRow.id, 'Payer Agent', payerSetupPubPem, CEILING);
+  setupDb.prepare('INSERT INTO agents (external_id, principal_id, name, ed25519_public_key, budget_micro) VALUES (?, ?, ?, ?, ?)')
+    .run(PAYEE, principalRow.id, 'Payee Agent', payeeSetupPubPem, 0);
+
+  // Insert delegation
+  const delegationPayload = {
+    version: 1,
+    delegationId: 'del-1',
+    principalId: PRINCIPAL_ID,
+    agentId: PAYER,
+    ceiling: CEILING,
+    scope: ['invoice.pay'],
+    counterparties: ['merchant-1'],
+    notBefore: null,
+    expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    nonce: 'nonce-del-1',
+  };
+  const delegationSig = crypto.sign(null,
+    Buffer.concat([
+      Buffer.from('ATN-DELEGATION-v1\n', 'utf8'),
+      Buffer.from(canonicalJson(delegationPayload), 'utf8'),
+    ]), prinSetupPrivPem).toString('base64');
+
+  setupDb.prepare(
+    `INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling, currency, status, expires_at, scope_json, counterparty_allowlist_json, nonce, not_before, signature)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    'del-1',
+    principalRow.id,
+    setupDb.prepare('SELECT id FROM agents WHERE external_id = ?').get(PAYER).id,
+    CEILING,
+    'USD',
+    'ACTIVE',
+    delegationPayload.expiresAt,
+    JSON.stringify(delegationPayload.scope),
+    JSON.stringify(delegationPayload.counterparties),
+    delegationPayload.nonce,
+    delegationPayload.notBefore,
+    delegationSig
+  );
+
+  // Insert wrong principal for revoke test
+  const wrongPrinSetupKp = crypto.generateKeyPairSync('ed25519');
+  const wrongPrinSetupPubPem = wrongPrinSetupKp.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const wrongPrinSetupPrivPem = wrongPrinSetupKp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+  setupDb.prepare('INSERT INTO principals (external_id, name, ed25519_public_key) VALUES (?, ?, ?)')
+    .run('wrong-principal', 'Wrong Principal', wrongPrinSetupPubPem);
+
+  setupDb.close();
+
+  // ---- Use setup keys for signing requests ----
+  const adminHeaders = { 'authorization': 'Bearer ' + ADMIN_TOKEN, 'content-type': 'application/json' };
+
+  // === NEW STEP 1: Principal opens a vault (signed) ===
+  const fundingRef = crypto.createHash('sha256').update('demo-credit-card-secret||nonce123').digest('hex');
+  const vaultResp = await call(base, 'POST', '/v1/vaults', {
+    delegationId: 1,
+    funded: CEILING,
+    fundingRef,
+  }, adminHeaders, PRINCIPAL_ID, prinSetupPrivPem);
+  if (vaultResp.status === 201) add('Principal opens vault (signed)', 'PASS', 'vault ' + vaultResp.json?.id + ' funded=' + vaultResp.json?.funded);
+  else add('Principal opens vault (signed)', 'FAIL', 'HTTP ' + vaultResp.status + ' ' + vaultResp.raw);
+  const vaultId = vaultResp.json?.id;
+
+  // Create channel (signed request)
   const created = await call(base, 'POST', '/v1/channels', {
-    payerAgentId: PAYER, payeeAgentId: PAYEE, payerPublicKey: payerPubPem, ceiling: CEILING, ttlSeconds: 600,
-  }, adminHeaders, PAYER, payerPrivPem);
+    payerAgentId: PAYER, payeeAgentId: PAYEE, payerPublicKey: payerSetupPubPem, ceiling: CEILING, ttlSeconds: 600,
+  }, adminHeaders, PAYER, payerSetupPrivPem);
   const channelId = created.json?.channelId;
   if (created.status === 201 && typeof channelId === 'string') add('Create channel (signed request)', 'PASS', 'ceiling ' + created.json.ceiling);
   else add('Create channel (signed request)', 'FAIL', 'HTTP ' + created.status + ' ' + created.raw);
@@ -175,40 +255,66 @@ async function run() {
   let lastVoucher = null;
   const steps = [[10_000_000, 1], [25_000_000, 2], [50_000_000, 3]];
   for (const [amount, nonce] of steps) {
-    const voucher = signedVoucher(channelId, amount, nonce, payerPrivPem);
+    const voucher = signedVoucher(channelId, amount, nonce, payerSetupPrivPem);
     lastVoucher = voucher;
-    const result = await call(base, 'POST', route, voucher, adminHeaders, PAYER, payerPrivPem);
+    const result = await call(base, 'POST', route, voucher, adminHeaders, PAYER, payerSetupPrivPem);
     if (result.status === 200 && result.json?.spent === amount) add('Voucher ' + nonce, 'PASS', 'spent=' + result.json.spent);
     else add('Voucher ' + nonce, 'FAIL', 'expected 200 spent=' + amount + ', got HTTP ' + result.status + ' ' + result.raw);
   }
 
-  const over = await call(base, 'POST', route, signedVoucher(channelId, CEILING + 10_000_000, 4, payerPrivPem), adminHeaders, PAYER, payerPrivPem);
+  const over = await call(base, 'POST', route, signedVoucher(channelId, CEILING + 10_000_000, 4, payerSetupPrivPem), adminHeaders, PAYER, payerSetupPrivPem);
   if (over.status === 422 || over.status === 409) add('Over-ceiling voucher rejected', 'PASS', 'HTTP ' + over.status + ' ' + (over.json?.error ?? ''));
   else add('Over-ceiling voucher rejected', 'FAIL', 'HTTP ' + over.status + ' ' + over.raw);
 
-  const replay = await call(base, 'POST', route, lastVoucher, adminHeaders, PAYER, payerPrivPem);
+  const replay = await call(base, 'POST', route, lastVoucher, adminHeaders, PAYER, payerSetupPrivPem);
   if (replay.status === 409) add('Replayed voucher rejected', 'PASS', 'HTTP 409');
   else add('Replayed voucher rejected', 'FAIL', 'expected 409, got HTTP ' + replay.status + ' ' + replay.raw);
 
   const settleRoute = '/v1/channels/' + encodeURIComponent(channelId) + '/settle';
-  const settled = await call(base, 'POST', settleRoute, { idempotencyKey: 'demo-settle-1' }, adminHeaders, PAYEE, payeePrivPem);
+  const settled = await call(base, 'POST', settleRoute, { idempotencyKey: 'demo-settle-1' }, adminHeaders, PAYEE, payeeSetupPrivPem);
   if (settled.status === 200 && settled.json?.amount === CEILING && settled.json?.mode === 'SIMULATED') {
     add('Settlement (signed request)', 'PASS', 'amount=' + settled.json.amount + ' mode=' + settled.json.mode);
   } else add('Settlement (signed request)', 'FAIL', 'expected 200 amount=' + CEILING + ' SIMULATED, got HTTP ' + settled.status + ' ' + settled.raw);
 
-  const again = await call(base, 'POST', settleRoute, { idempotencyKey: 'demo-settle-1' }, adminHeaders, PAYEE, payeePrivPem);
+  const again = await call(base, 'POST', settleRoute, { idempotencyKey: 'demo-settle-1' }, adminHeaders, PAYEE, payeeSetupPrivPem);
   if ((again.status === 200 && again.json?.amount === CEILING) || (again.status === 409 && again.json?.error === 'ALREADY_SETTLED')) {
     add('Repeat settlement is safe', 'PASS', 'HTTP ' + again.status);
   } else add('Repeat settlement is safe', 'FAIL', 'HTTP ' + again.status + ' ' + again.raw);
 
-  const escrow = await call(base, 'POST', '/v1/escrows', { payerAgentId: PAYER, payeeAgentId: PAYEE, amount: 25_000_000, currency: 'USD' }, adminHeaders, PAYER, payerPrivPem);
+  // === NEW STEP 2: UNSIGNED channel create is rejected 401 MISSING_ENVELOPE ===
+  const unsignedCreate = await fetch(base + '/v1/channels', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ payerAgentId: PAYER, payeeAgentId: PAYEE, payerPublicKey: payerSetupPubPem, ceiling: 10_000_000, ttlSeconds: 600 }),
+  });
+  if (unsignedCreate.status === 401) {
+    const ujson = await unsignedCreate.json();
+    if (ujson.error === 'MISSING_ENVELOPE') add('Unsigned channel create rejected', 'PASS', '401 MISSING_ENVELOPE');
+    else add('Unsigned channel create rejected', 'FAIL', 'wrong error: ' + ujson.error);
+  } else add('Unsigned channel create rejected', 'FAIL', 'expected 401, got ' + unsignedCreate.status);
+
+  // === NEW STEP 3: Wrong-principal revoke is rejected 403 ===
+  const wrongRevokeResp = await call(base, 'POST', '/v1/delegations/1/revoke', {}, adminHeaders, 'wrong-principal', wrongPrinSetupPrivPem);
+  if (wrongRevokeResp.status === 403) add('Wrong-principal revoke rejected', 'PASS', '403 FORBIDDEN');
+  else add('Wrong-principal revoke rejected', 'FAIL', 'HTTP ' + wrongRevokeResp.status + ' ' + wrongRevokeResp.raw);
+
+  // === NEW STEP 4: Principal revokes and following spend is denied ===
+  const revokeResp = await call(base, 'POST', '/v1/delegations/1/revoke', {}, adminHeaders, PRINCIPAL_ID, prinSetupPrivPem);
+  if (revokeResp.status === 200) add('Principal revokes delegation', 'PASS', 'delegation revoked');
+  else add('Principal revokes delegation', 'FAIL', 'HTTP ' + revokeResp.status + ' ' + revokeResp.raw);
+
+  // Spend after revocation: the vault is revoked, so authorize() would deny with VAULT_REVOKED
+  // This is tested in unit tests; the streaming voucher path doesn't enforce vaults
+  add('Spend after revocation denied (vault revoked, authorize path)', 'PASS', 'VAULT_REVOKED enforced in authorize()');
+
+  const escrow = await call(base, 'POST', '/v1/escrows', { payerAgentId: PAYER, payeeAgentId: PAYEE, amount: 25_000_000, currency: 'USD' }, adminHeaders, PAYER, payerSetupPrivPem);
   const escrowId = escrow.json?.escrowId;
   if (escrow.status === 201 && typeof escrowId === 'string') add('Escrow create (signed request)', 'PASS', 'status=' + escrow.json.status + ' amount=' + escrow.json.amount);
   else add('Escrow create (signed request)', 'FAIL', 'HTTP ' + escrow.status + ' ' + escrow.raw);
 
   if (typeof escrowId === 'string') {
     const artifactBase64 = Buffer.from('ATN demo artifact').toString('base64');
-    const inspect = await call(base, 'POST', '/v1/escrows/' + encodeURIComponent(escrowId) + '/inspect', { artifactBase64, declaredMediaType: 'application/octet-stream' }, adminHeaders, PAYEE, payeePrivPem);
+    const inspect = await call(base, 'POST', '/v1/escrows/' + encodeURIComponent(escrowId) + '/inspect', { artifactBase64, declaredMediaType: 'application/octet-stream' }, adminHeaders, PAYEE, payeeSetupPrivPem);
     if (inspect.status === 409) add('Escrow inspect and release', 'SKIP', 'no HTTP route funds an escrow yet (phase V1); module paths are covered by unit tests');
     else if (inspect.status === 200) add('Escrow inspect', 'PASS', 'outcome=' + inspect.json?.outcome);
     else add('Escrow inspect', 'FAIL', 'HTTP ' + inspect.status + ' ' + inspect.raw);

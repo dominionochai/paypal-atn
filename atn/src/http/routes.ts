@@ -132,32 +132,96 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'vaults' && segments[3] === 'revoke');
 
       let publicKey = '';
+      let actorId = agentId; // For principal routes, this is the principal's external_id
       if (isPrincipalSignedRoute) {
-        // ... principal signed route logic
+        const principal = db.prepare(
+          `SELECT id, ed25519_public_key, external_id FROM principals WHERE external_id = ?`
+        ).get(agentId) as { id: number; ed25519_public_key: string; external_id: string } | undefined;
+
+        if (!principal) return unauthorized('unknown principal', 'UNKNOWN_PRINCIPAL');
+
+        publicKey = principal.ed25519_public_key;
+        actorId = principal.external_id;
+
+        // Authorization checks for principal-signed routes
+        if (segments.length === 2 && segments[0] === 'v1' && segments[1] === 'vaults') {
+          // POST /v1/vaults - delegation must belong to this principal
+          const parsedBody = parseJsonBody(body);
+          if (process.env.NODE_ENV === 'test') console.error('[DEBUG] Vault create body:', parsedBody);
+          const delId = parsedBody?.delegationId;
+          if (delId === undefined) return bad('delegationId required');
+          const delegation = db.prepare(
+            `SELECT principal_id FROM delegations WHERE id = ?`
+          ).get(Number(delId) || -1) as { principal_id: number } | undefined;
+          if (process.env.NODE_ENV === 'test') console.error('[DEBUG] Delegation lookup:', { delId, delegation, principalId: principal.id });
+          if (!delegation) return json(404, { error: 'NOT_FOUND', detail: 'delegation not found' });
+          if (delegation.principal_id !== principal.id) return forbidden('principal does not own delegation', 'FORBIDDEN');
+        } else if (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'delegations' && segments[3] === 'revoke') {
+          // POST /v1/delegations/:id/revoke - delegation's principal must equal signer
+          const delId = segments[2];
+          const delegation = db.prepare(
+            `SELECT principal_id FROM delegations WHERE id = ? OR external_id = ?`
+          ).get(Number(delId) || -1, delId) as { principal_id: number } | undefined;
+          if (!delegation) return json(404, { error: 'NOT_FOUND', detail: 'delegation not found' });
+          if (delegation.principal_id !== principal.id) return forbidden('principal does not own delegation', 'FORBIDDEN');
+        } else if (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'vaults' && segments[3] === 'revoke') {
+          // POST /v1/vaults/:id/revoke - vault's delegation's principal must equal signer
+          const vaultId = segments[2];
+          const vault = db.prepare(
+            `SELECT d.principal_id FROM vaults AS v JOIN delegations AS d ON d.id = v.delegation_id WHERE v.id = ?`
+          ).get(vaultId) as { principal_id: number } | undefined;
+          if (!vault) return json(404, { error: 'NOT_FOUND', detail: 'vault not found' });
+          if (vault.principal_id !== principal.id) return forbidden('principal does not own vault', 'FORBIDDEN');
+        }
       } else {
         const agent = db.prepare(
-          `SELECT id, revoked_at, ed25519_public_key FROM agents WHERE external_id = ?`
-        ).get(agentId) as { id: number; revoked_at: number | null; ed25519_public_key: string } | undefined;
+          `SELECT id, revoked_at, ed25519_public_key, external_id FROM agents WHERE external_id = ?`
+        ).get(agentId) as { id: number; revoked_at: number | null; ed25519_public_key: string; external_id: string } | undefined;
 
         if (!agent) return unauthorized('unknown agent', 'UNKNOWN_AGENT');
         if (agent.revoked_at !== null) return forbidden('agent revoked', 'AGENT_REVOKED');
         publicKey = agent.ed25519_public_key;
+        actorId = agent.external_id;
 
-        // Actor check: envelope agentId must match actor named in body or route
+        // Route-specific actor checks
         const parsedBody = parseJsonBody(body);
         if (parsedBody) {
-          const bodyPayer = parsedBody.payerAgentId;
-          const bodyPayee = parsedBody.payeeAgentId;
-          const bodyBuyer = parsedBody.buyerAgentId;
-          const bodyWorker = parsedBody.workerAgentId;
-          if (
-            (typeof bodyPayer === 'string' && bodyPayer !== agentId) ||
-            (typeof bodyPayee === 'string' && bodyPayee !== agentId && segments[3] !== 'settle') ||
-            (typeof bodyBuyer === 'string' && bodyBuyer !== agentId) ||
-            (typeof bodyWorker === 'string' && bodyWorker !== agentId)
-          ) {
-            if (bodyPayer && bodyPayer !== agentId) return forbidden('actor mismatch', 'ACTOR_MISMATCH');
-            if (bodyBuyer && bodyBuyer !== agentId) return forbidden('actor mismatch', 'ACTOR_MISMATCH');
+          // POST /v1/channels - signer must be payerAgentId
+          if (segments.length === 2 && segments[0] === 'v1' && segments[1] === 'channels') {
+            const bodyPayer = parsedBody.payerAgentId;
+            if (typeof bodyPayer === 'string' && bodyPayer !== actorId) {
+              return forbidden('channel creation requires payer agent', 'FORBIDDEN');
+            }
+          }
+          // POST /v1/channels/:id/vouchers - signer must be channel's payer agent
+          else if (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'channels' && segments[3] === 'vouchers') {
+            const channelId = segments[2];
+            const channel = db.prepare('SELECT payer_agent_id FROM channels WHERE id = ?').get(channelId) as { payer_agent_id: string } | undefined;
+            if (channel && channel.payer_agent_id !== actorId) {
+              return forbidden('voucher requires channel payer agent', 'FORBIDDEN');
+            }
+          }
+          // POST /v1/channels/:id/settle - signer must be channel's payee agent
+          else if (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'channels' && segments[3] === 'settle') {
+            const channelId = segments[2];
+            const channel = db.prepare('SELECT payee_agent_id FROM channels WHERE id = ?').get(channelId) as { payee_agent_id: string } | undefined;
+            if (channel && channel.payee_agent_id !== actorId) {
+              return forbidden('settle requires channel payee agent', 'FORBIDDEN');
+            }
+          }
+          // POST /v1/escrows - signer must be payerAgentId
+          else if (segments.length === 2 && segments[0] === 'v1' && segments[1] === 'escrows') {
+            const bodyPayer = parsedBody.payerAgentId;
+            if (typeof bodyPayer === 'string' && bodyPayer !== actorId) {
+              return forbidden('escrow creation requires payer agent', 'FORBIDDEN');
+            }
+          }
+          // POST /v1/escrows/:id/inspect, /release, /refund - signer must be payeeAgentId
+          else if (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'escrows' && segments[3] && ['inspect', 'release', 'refund'].includes(segments[3])) {
+            const bodyPayee = parsedBody.payeeAgentId;
+            if (typeof bodyPayee === 'string' && bodyPayee !== actorId) {
+              return forbidden('escrow action requires payee agent', 'FORBIDDEN');
+            }
           }
         }
       }
@@ -314,6 +378,10 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       const { delegationId, funded, fundingRef, ttlSeconds } = parsed;
       if (delegationId === undefined || !positiveInt(funded) || !nonEmptyString(fundingRef)) {
         return bad('invalid vault parameters');
+      }
+      // fundingRef must be a 64-hex string (sha256 commitment)
+      if (!/^[0-9a-f]{64}$/i.test(fundingRef)) {
+        return json(400, { error: 'INVALID_FUNDING_COMMITMENT', detail: 'fundingRef must be a 64-hex string' });
       }
       try {
         const vaultOpts: { delegationId: number | string; funded: number; fundingRef: string; ttlSeconds?: number } = {
