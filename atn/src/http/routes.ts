@@ -147,13 +147,11 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         if (segments.length === 2 && segments[0] === 'v1' && segments[1] === 'vaults') {
           // POST /v1/vaults - delegation must belong to this principal
           const parsedBody = parseJsonBody(body);
-          if (process.env.NODE_ENV === 'test') console.error('[DEBUG] Vault create body:', parsedBody);
           const delId = parsedBody?.delegationId;
           if (delId === undefined) return bad('delegationId required');
           const delegation = db.prepare(
             `SELECT principal_id FROM delegations WHERE id = ?`
           ).get(Number(delId) || -1) as { principal_id: number } | undefined;
-          if (process.env.NODE_ENV === 'test') console.error('[DEBUG] Delegation lookup:', { delId, delegation, principalId: principal.id });
           if (!delegation) return json(404, { error: 'NOT_FOUND', detail: 'delegation not found' });
           if (delegation.principal_id !== principal.id) return forbidden('principal does not own delegation', 'FORBIDDEN');
         } else if (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'delegations' && segments[3] === 'revoke') {
