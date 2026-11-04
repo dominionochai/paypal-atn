@@ -44,7 +44,6 @@ export interface DbLike {
 
 export function validateVoucher(db: DbLike, v: VoucherInput, channel: ChannelRow, now: number = Date.now()): VoucherResult {
   if (channel.status !== 'OPEN') return { ok: false, code: 'CHANNEL_CLOSED', detail: `channel status is ${channel.status}` };
-  if (now > channel.expires_at) return { ok: false, code: 'STALE', detail: 'channel expired' };
   if (v.payload.channelId !== channel.id) return { ok: false, code: 'WRONG_PARTY', detail: 'channel id mismatch' };
   if (v.payload.payeeAgentId !== channel.payee_agent_id) return { ok: false, code: 'WRONG_PARTY', detail: 'payee does not match channel payee' };
   if (!verifyVoucher(v.payload, v.signature, channel.payer_public_key)) return { ok: false, code: 'TAMPERED', detail: 'signature verification failed' };
@@ -70,6 +69,8 @@ export function validateVoucher(db: DbLike, v: VoucherInput, channel: ChannelRow
   // Payer agent not revoked
   const payerAgent = (db as any).prepare('SELECT revoked_at FROM agents WHERE external_id = ?').get(channel.payer_agent_id) as { revoked_at: number | null } | undefined;
   if (payerAgent && payerAgent.revoked_at !== null) return { ok: false, code: 'AGENT_REVOKED', detail: 'payer agent revoked' };
+
+  if (now > channel.expires_at) return { ok: false, code: 'STALE', detail: 'channel expired' };
 
   if ((db as any).prepare('SELECT 1 FROM vouchers WHERE channel_id = ? AND nonce = ?').get(channel.id, v.payload.nonce)) return { ok: false, code: 'REPLAYED', detail: 'nonce already accepted for this channel' };
   if (v.payload.nonce <= channel.last_nonce) return { ok: false, code: 'STALE', detail: 'nonce not newer than last accepted nonce' };

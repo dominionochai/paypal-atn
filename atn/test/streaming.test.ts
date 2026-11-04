@@ -5,12 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { generateKeypair, signVoucher, type VoucherPayload } from '../src/streaming/signing.js';
-import { acceptVoucher, AlreadySettledError, getChannel, openChannel, settleChannel, type Db } from '../src/streaming/channel.js';
+import { acceptVoucher, AlreadySettledError, getChannel, openChannel, settleChannel, sweepExpiredChannels, type Db } from '../src/streaming/channel.js';
 import { SimulatedAdapter, type ChargeRequest, type ChargeResult, type PaymentAdapter } from '../src/payments/adapter.js';
 import { startStreamingServer } from '../src/streaming/ws.js';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import type { VoucherInput, VoucherResult } from '../src/streaming/voucher.js';
-import { createVault, reserveForChannel, authorize, revokeDelegation } from '../src/trust/authority.js';
+import { createVault, reserveForChannel, authorize, revokeDelegation, getVault } from '../src/trust/authority.js';
 import { canonicalJson, verifyDelegation } from '../src/trust/crypto.js';
 
 let database: InstanceType<typeof Database> | undefined;
@@ -317,4 +317,175 @@ describe('streaming payment channels', () => {
     socket.send(JSON.stringify({ type: 'voucher', channelId: channel.id, voucher: nextVoucher }));
     expect((await nextAck).type).toBe('ack');
   }, 15_000);
+
+  it('500 vouchers of 200 micro-dollars on a ceiling-100,000 channel settle exactly 100,000, vault committed 100,000, reserved 0', async () => {
+    const ceiling = 100_000;
+    const { channel, privateKey } = makeChannel({ ceiling });
+    for (let nonce = 1; nonce <= 500; nonce++) {
+      const res = acceptVoucher(streamingDb(), channel.id, makeVoucher(channel.id, channel.payee_agent_id, privateKey, nonce, nonce * 200), ceiling);
+      expect(res).toEqual({ ok: true });
+    }
+    const settlement = await settleChannel(streamingDb(), channel.id, 'settle-500', new SimulatedAdapter());
+    expect(settlement.amount).toBe(100_000);
+    const vault = getVault(streamingDb(), vaultId)!;
+    expect(vault.committed).toBe(100_000);
+    expect(vault.reserved).toBe(0);
+  });
+
+  it('two CONCURRENT settleChannel calls with DIFFERENT keys (Promise.all) -> exactly one adapter.charge call', async () => {
+    const { channel, privateKey } = makeChannel({ ceiling: 1000 });
+    acceptVoucher(streamingDb(), channel.id, makeVoucher(channel.id, channel.payee_agent_id, privateKey, 1, 100), 1000);
+    let chargeCalls = 0;
+    const adapter: PaymentAdapter = {
+      async charge(_req) {
+        chargeCalls++;
+        return { ref: 'ref-1', mode: 'SIMULATED' };
+      }
+    };
+    const results = await Promise.allSettled([
+      settleChannel(streamingDb(), channel.id, 'key-a', adapter),
+      settleChannel(streamingDb(), channel.id, 'key-b', adapter),
+    ]);
+    expect(chargeCalls).toBe(1);
+    const fulfilled = results.filter(r => r.status === 'fulfilled');
+    expect(fulfilled.length).toBe(1);
+  });
+
+  it('adapter throws once, then retry with the SAME key succeeds with exactly one successful charge', async () => {
+    const { channel, privateKey } = makeChannel({ ceiling: 1000 });
+    acceptVoucher(streamingDb(), channel.id, makeVoucher(channel.id, channel.payee_agent_id, privateKey, 1, 100), 1000);
+    let attempts = 0;
+    let successfulCharges = 0;
+    const adapter: PaymentAdapter = {
+      async charge(_req) {
+        attempts++;
+        if (attempts === 1) {
+          throw new Error('adapter failure');
+        }
+        successfulCharges++;
+        return { ref: 'ref-success', mode: 'SIMULATED' };
+      }
+    };
+    await expect(settleChannel(streamingDb(), channel.id, 'same-key-retry', adapter)).rejects.toThrow('adapter failure');
+    const settlement = await settleChannel(streamingDb(), channel.id, 'same-key-retry', adapter);
+    expect(settlement.amount).toBe(100);
+    expect(successfulCharges).toBe(1);
+  });
+
+  it('settle with 0 spent releases the whole reservation', async () => {
+    const { channel } = makeChannel({ ceiling: 1000 });
+    const settlement = await settleChannel(streamingDb(), channel.id, 'zero-spent-key', new SimulatedAdapter());
+    expect(settlement.amount).toBe(0);
+    const vault = getVault(streamingDb(), vaultId)!;
+    expect(vault.reserved).toBe(0);
+  });
+
+  it('sweeper settles an expired channel through a counting adapter (assert charge count 1)', async () => {
+    const { channel, privateKey } = makeChannel({ ceiling: 1000, ttlSeconds: 1 });
+    const res = acceptVoucher(streamingDb(), channel.id, makeVoucher(channel.id, channel.payee_agent_id, privateKey, 1, 100), 1000);
+    expect(res).toEqual({ ok: true });
+    let chargeCount = 0;
+    const adapter: PaymentAdapter = {
+      async charge(_req) {
+        chargeCount++;
+        return { ref: 'sweep-ref', mode: 'SIMULATED' };
+      }
+    };
+    await sweepExpiredChannels(streamingDb(), adapter, Date.now() + 5000);
+    expect(chargeCount).toBe(1);
+    expect(getChannel(streamingDb(), channel.id)?.status).toBe('SETTLED');
+  });
+
+  it('revoked delegation makes the next voucher fail', async () => {
+    const { channel, privateKey } = makeChannel({ ceiling: 1000 });
+    streamingDb().prepare("UPDATE delegations SET status = 'REVOKED' WHERE id = ?").run(1);
+    const voucher = makeVoucher(channel.id, channel.payee_agent_id, privateKey, 1, 100);
+    const result = acceptVoucher(streamingDb(), channel.id, voucher, 1000);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('DELEGATION_REVOKED');
+  });
+
+  it('expired vault (injected clock) makes the next voucher fail', async () => {
+    const vaultExpired = createVault(streamingDb(), {
+      delegationId: 1,
+      funded: 10000,
+      fundingRef: '3'.repeat(64),
+      ttlSeconds: 1,
+      now: Date.now() - 10000,
+    });
+    const ch = openChannel(streamingDb(), {
+      payerAgentId: 'payer-agent',
+      payeeAgentId: 'payee-agent',
+      vaultId: vaultExpired.id,
+      ceiling: 1000,
+      ttlSeconds: 1,
+      now: Date.now() - 10000,
+    });
+    const voucher = makeVoucher(ch.id, ch.payee_agent_id, payerPrivateKeyPem, 1, 100);
+    const result = acceptVoucher(streamingDb(), ch.id, voucher, 1000, Date.now());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('VAULT_EXPIRED');
+  });
+
+  it('a 100,000 channel on a $50 vault leaves 49,900,000 available for another reservation', async () => {
+    const delId = streamingDb().prepare(
+      `INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling, currency, status, expires_at, scope_json, counterparty_allowlist_json, nonce, not_before, signature)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run('del-50', 1, 1, 50_000_000, 'USD', 'ACTIVE', new Date(Date.now() + 86_400_000).toISOString(), JSON.stringify(['invoice.pay']), JSON.stringify(['payee-agent']), 'nonce-50', null, 'sig').lastInsertRowid;
+
+    const vault50 = createVault(streamingDb(), {
+      delegationId: Number(delId),
+      funded: 50_000_000,
+      fundingRef: '1'.repeat(64),
+    });
+    const ch = openChannel(streamingDb(), {
+      payerAgentId: 'payer-agent',
+      payeeAgentId: 'payee-agent',
+      vaultId: vault50.id,
+      ceiling: 100_000,
+      ttlSeconds: 3600,
+    });
+    const v = getVault(streamingDb(), vault50.id)!;
+    const available = v.funded - v.committed - v.reserved;
+    expect(available).toBe(49_900_000);
+  });
+
+  it('invariant: after settling a 100,000 channel that spent 40,000, available at the vault AND at the delegation level both equal funded - 40,000', async () => {
+    const funded = 50_000_000;
+    const delId = streamingDb().prepare(
+      `INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling, currency, status, expires_at, scope_json, counterparty_allowlist_json, nonce, not_before, signature)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run('del-inv', 1, 1, 50_000_000, 'USD', 'ACTIVE', new Date(Date.now() + 86_400_000).toISOString(), JSON.stringify(['invoice.pay']), JSON.stringify(['payee-agent']), 'nonce-inv', null, 'sig').lastInsertRowid;
+
+    const vault = createVault(streamingDb(), {
+      delegationId: Number(delId),
+      funded,
+      fundingRef: '2'.repeat(64),
+    });
+    const ch = openChannel(streamingDb(), {
+      payerAgentId: 'payer-agent',
+      payeeAgentId: 'payee-agent',
+      vaultId: vault.id,
+      ceiling: 100_000,
+      ttlSeconds: 3600,
+    });
+    acceptVoucher(streamingDb(), ch.id, makeVoucher(ch.id, ch.payee_agent_id, payerPrivateKeyPem, 1, 40_000), 100_000);
+    await settleChannel(streamingDb(), ch.id, 'invariant-key', new SimulatedAdapter());
+
+    const v = getVault(streamingDb(), vault.id)!;
+    const vaultAvailable = v.funded - v.committed - v.reserved;
+
+    const delegationCommitted = (streamingDb().prepare(
+      `SELECT COALESCE((SELECT SUM(t.amount) FROM transactions AS t WHERE t.delegation_id = ? AND t.state = 'SETTLED'), 0) + COALESCE((SELECT SUM(r.amount) FROM budget_reservations AS r WHERE r.delegation_id = ? AND r.status = 'SETTLED' AND r.transaction_id IS NULL), 0) AS total`
+    ).get(Number(delId), Number(delId)) as { total: number }).total;
+    const delegationReserved = (streamingDb().prepare(
+      `SELECT COALESCE(SUM(amount), 0) AS total FROM budget_reservations WHERE delegation_id = ? AND status = 'RESERVED' AND expires_at > ?`
+    ).get(Number(delId), Date.now()) as { total: number }).total;
+    const ceilingRow = streamingDb().prepare('SELECT budget_ceiling FROM delegations WHERE id = ?').get(Number(delId)) as { budget_ceiling: number };
+    const delegationAvailable = ceilingRow.budget_ceiling - delegationCommitted - delegationReserved;
+
+    const expected = funded - 40_000;
+    expect(vaultAvailable).toBe(expected);
+    expect(delegationAvailable).toBe(expected);
+  });
 });

@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { validateVoucher, type ChannelRow, type VoucherInput, type VoucherResult } from './voucher.js';
 import type { PaymentAdapter } from '../payments/adapter.js';
-import { reserveForChannel, release, getVault } from '../trust/authority.js';
+import { reserveForChannel, getVault } from '../trust/authority.js';
 export type Db = Database;
 export class AlreadySettledError extends Error { constructor(public channelId: string) { super(`channel ${channelId} is already settled`); this.name = 'AlreadySettledError'; } }
 export class UnknownChannelError extends Error { constructor(public channelId: string) { super(`unknown channel ${channelId}`); this.name = 'UnknownChannelError'; } }
@@ -76,7 +76,7 @@ export function getChannel(db: Db, id: string): ChannelRow | null {
   return (db.prepare('SELECT * FROM channels WHERE id = ?').get(id) as ChannelRow | undefined) ?? null;
 }
 
-export function acceptVoucher(db: Db, channelId: string, v: VoucherInput, _delegationBudget: number): VoucherResult {
+export function acceptVoucher(db: Db, channelId: string, v: VoucherInput, _delegationBudget: number, now?: number): VoucherResult {
   let result: VoucherResult = { ok: false, code: 'UNKNOWN_CHANNEL', detail: 'no such channel' };
   db.transaction(() => {
     const ch = getChannel(db, channelId);
@@ -85,7 +85,7 @@ export function acceptVoucher(db: Db, channelId: string, v: VoucherInput, _deleg
       return;
     }
     // Validate voucher with vault checks
-    result = validateVoucher(db, v, ch, Date.now());
+    result = validateVoucher(db, v, ch, now ?? Date.now());
     if (result.ok) {
       const nextSpent = Math.max(ch.spent, v.payload.cumulativeAmount);
       db.prepare('UPDATE channels SET spent = ?, last_nonce = ? WHERE id = ?').run(nextSpent, v.payload.nonce, channelId);
@@ -124,17 +124,39 @@ export async function settleChannel(db: Db, channelId: string, idempotencyKey: s
   if (existing) {
     if (existing.channel_id !== channelId) throw new Error('idempotency key reused for a different channel');
     if (existing.status === 'COMPLETED') return existing;
-    // If PENDING or FAILED, we'll retry: update status back to PENDING
     db.prepare('UPDATE settlements SET status = \'PENDING\' WHERE idempotency_key = ?').run(idempotencyKey);
   } else {
+    if (ch.status === 'SETTLED') throw new AlreadySettledError(channelId);
+
     // No existing idempotency key - check if channel already has a settlement (COMPLETED or PENDING)
     const channelSettlement = db.prepare('SELECT * FROM settlements WHERE channel_id = ? AND status IN (\'COMPLETED\', \'PENDING\')').get(channelId) as SettlementRow | undefined;
     if (channelSettlement) throw new AlreadySettledError(channelId);
     
-    // Insert new PENDING settlement row BEFORE calling adapter
+    const anyChannelSettlement = db.prepare('SELECT * FROM settlements WHERE channel_id = ?').get(channelId) as SettlementRow | undefined;
+    if (anyChannelSettlement) {
+      if (anyChannelSettlement.status === 'COMPLETED') throw new AlreadySettledError(channelId);
+      db.prepare('UPDATE settlements SET idempotency_key = ?, status = \'PENDING\', created_at = ? WHERE channel_id = ?')
+        .run(idempotencyKey, Date.now(), channelId);
+    } else {
+      // Insert new PENDING settlement row BEFORE calling adapter
+      const now = Date.now();
+      db.prepare('INSERT INTO settlements (channel_id, idempotency_key, amount, mode, status, created_at) VALUES (?,?,?,?,\'PENDING\',?)')
+        .run(channelId, idempotencyKey, ch.spent, 'UNKNOWN', now);
+    }
+  }
+
+  if (ch.spent === 0) {
     const now = Date.now();
-    db.prepare('INSERT INTO settlements (channel_id, idempotency_key, amount, mode, status, created_at) VALUES (?,?,?,?,\'PENDING\',?)')
-      .run(channelId, idempotencyKey, ch.spent, 'UNKNOWN', now);
+    db.transaction(() => {
+      if (ch.reservation_ref && ch.vault_id) {
+        db.prepare('UPDATE vaults SET reserved = reserved - ? WHERE id = ?').run(ch.ceiling, ch.vault_id);
+        db.prepare("UPDATE budget_reservations SET amount = 0, status = 'RELEASED' WHERE reservation_ref = ?").run(ch.reservation_ref);
+      }
+      db.prepare("UPDATE channels SET status = 'SETTLED' WHERE id = ?").run(channelId);
+      db.prepare('UPDATE settlements SET amount = ?, mode = ?, status = \'COMPLETED\', completed_at = ? WHERE channel_id = ? AND idempotency_key = ?')
+        .run(0, 'SIMULATED', now, channelId, idempotencyKey);
+    })();
+    return db.prepare('SELECT * FROM settlements WHERE idempotency_key = ?').get(idempotencyKey) as SettlementRow;
   }
 
   // Call adapter OUTSIDE transaction
@@ -163,17 +185,10 @@ export async function settleChannel(db: Db, channelId: string, idempotencyKey: s
 
     // Update vault: move spent from reserved to committed, release unspent remainder
     if (ch.reservation_ref && ch.vault_id) {
-      // Move spent from reserved to committed
       db.prepare('UPDATE vaults SET reserved = reserved - ?, committed = committed + ? WHERE id = ?')
-        .run(ch.spent, ch.spent, ch.vault_id);
-      // Release unspent remainder from reserved
-      if (unspent > 0) {
-        db.prepare('UPDATE vaults SET reserved = reserved - ? WHERE id = ?')
-          .run(unspent, ch.vault_id);
-      }
-      // Mark reservation as SETTLED
-      db.prepare("UPDATE budget_reservations SET status = 'SETTLED' WHERE reservation_ref = ?")
-        .run(ch.reservation_ref);
+        .run(ch.ceiling, ch.spent, ch.vault_id);
+      db.prepare("UPDATE budget_reservations SET amount = ?, status = 'SETTLED' WHERE reservation_ref = ?")
+        .run(ch.spent, ch.reservation_ref);
     }
 
     // Mark channel SETTLED
@@ -187,84 +202,29 @@ export async function settleChannel(db: Db, channelId: string, idempotencyKey: s
   return db.prepare('SELECT * FROM settlements WHERE idempotency_key = ?').get(idempotencyKey) as SettlementRow;
 }
 
-export function sweepExpiredChannels(db: Db, now?: number): void {
+export async function sweepExpiredChannels(db: Db, adapter: PaymentAdapter, now?: number): Promise<void> {
   const nowMs = now ?? Date.now();
 
   // Find expired OPEN channels
   const expiredChannels = db.prepare("SELECT * FROM channels WHERE status = 'OPEN' AND expires_at <= ?").all(nowMs) as ChannelRow[];
 
   for (const ch of expiredChannels) {
-    if (ch.spent > 0) {
-      // Settle for spent amount using the same code path as settleChannel
-      try {
-        // Use a generated idempotency key for the sweeper
-        // We need to call settleChannel with an adapter
-        // Since this is a synchronous function, we'll need to handle it differently
-        // For now, we'll create a simplified version that does the same thing
-        // But first, let's check if there's already a settlement
-        const existingSettlement = db.prepare('SELECT * FROM settlements WHERE channel_id = ? AND status IN (\'COMPLETED\', \'PENDING\')').get(ch.id);
-        if (existingSettlement) continue;
-        
-        // Insert PENDING settlement row
-        const now = Date.now();
-        const sweeperKey = `sweep-${ch.id}-${now}`;
-        db.prepare('INSERT INTO settlements (channel_id, idempotency_key, amount, mode, status, created_at) VALUES (?,?,?,?,\'PENDING\',?)')
-          .run(ch.id, sweeperKey, ch.spent, 'UNKNOWN', now);
-        
-        // Call adapter OUTSIDE transaction (but we're in sync context)
-        // For sweeper, we'll just simulate the adapter call synchronously
-        const charge = { mode: 'SIMULATED', ref: `sweep-${ch.id}-${now}` };
-        
-        const unspent = ch.ceiling - ch.spent;
-        const settleNow = Date.now();
+    if (ch.spent === 0) {
+      if (ch.reservation_ref && ch.vault_id) {
         db.transaction(() => {
-          // Update settlement row
-          db.prepare('UPDATE settlements SET amount = ?, mode = ?, adapter_ref = ?, status = \'COMPLETED\', completed_at = ? WHERE channel_id = ? AND idempotency_key = ?')
-            .run(ch.spent, charge.mode, charge.ref, settleNow, ch.id, sweeperKey);
-          
-          // Update vault: move spent from reserved to committed, release unspent remainder
-          if (ch.reservation_ref && ch.vault_id) {
-            // Move spent from reserved to committed
-            db.prepare('UPDATE vaults SET reserved = reserved - ?, committed = committed + ? WHERE id = ?')
-              .run(ch.spent, ch.spent, ch.vault_id);
-            // Release unspent remainder from reserved
-            if (unspent > 0) {
-              db.prepare('UPDATE vaults SET reserved = reserved - ? WHERE id = ?')
-                .run(unspent, ch.vault_id);
-            }
-            // Mark reservation as SETTLED
-            db.prepare("UPDATE budget_reservations SET status = 'SETTLED' WHERE reservation_ref = ?")
-              .run(ch.reservation_ref);
-          }
-          
-          // Mark channel SETTLED
-          db.prepare("UPDATE channels SET status = 'SETTLED' WHERE id = ?").run(ch.id);
-          
-          // Write audit
+          db.prepare('UPDATE vaults SET reserved = reserved - ? WHERE id = ?').run(ch.ceiling, ch.vault_id);
+          db.prepare("UPDATE budget_reservations SET amount = 0, status = 'RELEASED' WHERE reservation_ref = ?").run(ch.reservation_ref);
+          db.prepare("UPDATE channels SET status = 'EXPIRED' WHERE id = ?").run(ch.id);
           db.prepare('INSERT INTO audit_events (entity_type, entity_id, event, payload, actor) VALUES (?,?,?,?,?)')
-            .run('channel', null, 'channel.swept', JSON.stringify({ channelId: ch.id, amount: ch.spent, unspentReleased: unspent }), null);
+            .run('channel', null, 'channel.expired', JSON.stringify({ channelId: ch.id, reason: 'zero_spent' }), null);
         })();
-      } catch (e) {
-        // On adapter failure leave the channel retryable, do not mark it settled
-        // Remove the PENDING settlement row
-        const now = Date.now();
-        db.prepare('DELETE FROM settlements WHERE channel_id = ? AND idempotency_key = ?').run(ch.id, `sweep-${ch.id}-${now}`);
-        // Release the reservation
-        if (ch.reservation_ref) {
-          release(db, ch.reservation_ref);
-        }
-        db.prepare("UPDATE channels SET status = 'EXPIRED' WHERE id = ?").run(ch.id);
-        db.prepare('INSERT INTO audit_events (entity_type, entity_id, event, payload, actor) VALUES (?,?,?,?,?)')
-          .run('channel', null, 'channel.expired', JSON.stringify({ channelId: ch.id, reason: 'sweep_adapter_failed' }), null);
       }
     } else {
-      // Spent is 0, just release the whole reservation
-      if (ch.reservation_ref) {
-        release(db, ch.reservation_ref);
+      try {
+        await settleChannel(db, ch.id, `sweep-${ch.id}`, adapter);
+      } catch (e) {
+        // On adapter failure leave the channel OPEN/retryable and settlement row FAILED
       }
-      db.prepare("UPDATE channels SET status = 'EXPIRED' WHERE id = ?").run(ch.id);
-      db.prepare('INSERT INTO audit_events (entity_type, entity_id, event, payload, actor) VALUES (?,?,?,?,?)')
-        .run('channel', null, 'channel.expired', JSON.stringify({ channelId: ch.id, reason: 'zero_spent' }), null);
     }
   }
 }

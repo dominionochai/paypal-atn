@@ -8,7 +8,7 @@ import { createDatabase } from '../db/db.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_REQUEST_URL_LENGTH = 2048;
-const DEFAULT_RATE_LIMIT = { max: 120, windowMs: 60000 };
+const DEFAULT_RATE_LIMIT = { max: Number(process.env.RATE_LIMIT_MAX ?? 120), windowMs: 60000 };
 
 type BodyResult = { ok: true; body: Buffer } | { ok: false; tooLarge: boolean };
 type RateLimitBucket = { count: number; resetAt: number };

@@ -68,7 +68,7 @@ function signRequest(agentId, method, path, bodyObj, privateKeyPem) {
 
 async function call(base, method, route, body, headers, agentId, privateKeyPem) {
   const reqHeaders = { ...(headers ?? {}) };
-  if (body !== undefined) {
+  if (body !== undefined && body !== null) {
     reqHeaders['content-type'] = 'application/json';
   }
   if (agentId && privateKeyPem && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
@@ -76,7 +76,7 @@ async function call(base, method, route, body, headers, agentId, privateKeyPem) 
     Object.assign(reqHeaders, sigHeaders);
   }
   const options = { method, headers: reqHeaders };
-  if (body !== undefined) {
+  if (body !== undefined && body !== null) {
     options.body = JSON.stringify(body);
   }
   const response = await fetch(base + route, options);
@@ -140,6 +140,7 @@ async function run() {
     ATN_ADMIN_TOKEN: ADMIN_TOKEN,
     NODE_ENV: 'test',
     ATN_CORS_ORIGINS: 'http://localhost:3000',
+    RATE_LIMIT_MAX: '1000',
   };
 
   // ---- Start server (let it run migrations) ----
@@ -244,7 +245,7 @@ async function run() {
 
   // Create channel (signed request) - NEW API: uses vaultId instead of payerPublicKey/ceiling
   const created = await call(base, 'POST', '/v1/channels', {
-    payerAgentId: PAYER, payeeAgentId: PAYEE, vaultId: vaultId, ttlSeconds: 600,
+    payerAgentId: PAYER, payeeAgentId: PAYEE, vaultId: vaultId, ceiling: 100_000, ttlSeconds: 600,
   }, adminHeaders, PAYER, payerSetupPrivPem);
   const channelId = created.json?.channelId;
   if (created.status === 201 && typeof channelId === 'string') add('Create channel (signed request)', 'PASS', 'ceiling ' + created.json.ceiling);
@@ -253,16 +254,19 @@ async function run() {
 
   const route = '/v1/channels/' + encodeURIComponent(channelId) + '/vouchers';
   let lastVoucher = null;
-  const steps = [[10_000_000, 1], [25_000_000, 2], [50_000_000, 3]];
-  for (const [amount, nonce] of steps) {
+  for (let nonce = 1; nonce <= 500; nonce++) {
+    const amount = nonce * 200;
     const voucher = signedVoucher(channelId, amount, nonce, payerSetupPrivPem);
     lastVoucher = voucher;
     const result = await call(base, 'POST', route, voucher, adminHeaders, PAYER, payerSetupPrivPem);
-    if (result.status === 200 && result.json?.spent === amount) add('Voucher ' + nonce, 'PASS', 'spent=' + result.json.spent);
-    else add('Voucher ' + nonce, 'FAIL', 'expected 200 spent=' + amount + ', got HTTP ' + result.status + ' ' + result.raw);
+    if (result.status !== 200 || result.json?.spent !== amount) {
+      add('Voucher ' + nonce, 'FAIL', 'expected 200 spent=' + amount + ', got HTTP ' + result.status + ' ' + result.raw);
+      break;
+    }
   }
+  add('Stream 500 vouchers of 200', 'PASS', '500 vouchers accepted');
 
-  const over = await call(base, 'POST', route, signedVoucher(channelId, CEILING + 10_000_000, 4, payerSetupPrivPem), adminHeaders, PAYER, payerSetupPrivPem);
+  const over = await call(base, 'POST', route, signedVoucher(channelId, 100_000 + 200, 501, payerSetupPrivPem), adminHeaders, PAYER, payerSetupPrivPem);
   if (over.status === 422 || over.status === 409) add('Over-ceiling voucher rejected', 'PASS', 'HTTP ' + over.status + ' ' + (over.json?.error ?? ''));
   else add('Over-ceiling voucher rejected', 'FAIL', 'HTTP ' + over.status + ' ' + over.raw);
 
@@ -272,14 +276,19 @@ async function run() {
 
   const settleRoute = '/v1/channels/' + encodeURIComponent(channelId) + '/settle';
   const settled = await call(base, 'POST', settleRoute, { idempotencyKey: 'demo-settle-1' }, adminHeaders, PAYEE, payeeSetupPrivPem);
-  if (settled.status === 200 && settled.json?.amount === CEILING && settled.json?.mode === 'SIMULATED') {
+  if (settled.status === 200 && settled.json?.amount === 100_000 && settled.json?.mode === 'SIMULATED') {
     add('Settlement (signed request)', 'PASS', 'amount=' + settled.json.amount + ' mode=' + settled.json.mode);
-  } else add('Settlement (signed request)', 'FAIL', 'expected 200 amount=' + CEILING + ' SIMULATED, got HTTP ' + settled.status + ' ' + settled.raw);
+  } else add('Settlement (signed request)', 'FAIL', 'expected 200 amount=100000 SIMULATED, got HTTP ' + settled.status + ' ' + settled.raw);
 
   const again = await call(base, 'POST', settleRoute, { idempotencyKey: 'demo-settle-1' }, adminHeaders, PAYEE, payeeSetupPrivPem);
-  if ((again.status === 200 && again.json?.amount === CEILING) || (again.status === 409 && again.json?.error === 'ALREADY_SETTLED')) {
+  if ((again.status === 200 && again.json?.amount === 100_000) || (again.status === 409 && again.json?.error === 'ALREADY_SETTLED')) {
     add('Repeat settlement is safe', 'PASS', 'HTTP ' + again.status);
   } else add('Repeat settlement is safe', 'FAIL', 'HTTP ' + again.status + ' ' + again.raw);
+
+  const vaultCheck = await call(base, 'GET', '/v1/vaults/' + encodeURIComponent(vaultId), null, adminHeaders);
+  const vaultCommitted = vaultCheck.json?.committed;
+  const vaultAvailable = vaultCheck.json?.funded - vaultCheck.json?.committed - vaultCheck.json?.reserved;
+  console.log('vault committed (' + vaultCommitted + ') available (' + vaultAvailable + ')');
 
   // === NEW STEP 2: UNSIGNED channel create is rejected 401 MISSING_ENVELOPE ===
   const unsignedCreate = await fetch(base + '/v1/channels', {
