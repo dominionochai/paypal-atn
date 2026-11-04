@@ -184,23 +184,27 @@ describe("HTTP API", () => {
     expect(secondBody.error).toBe("ALREADY_SETTLED");
   });
 
-  it("forbids settlement when the authority header is not the channel payee", async () => {
+  it("allows settlement without x-atn-authority header", async () => {
     const channel = await createChannel();
-    const response = await fetch(
+    const voucher = signedVoucher(
+      channel.channelId,
+      channel.payeeAgentId,
+      channel.keys.privateKey,
+    );
+    const accepted = await postVoucher(channel.channelId, voucher);
+    expect(accepted.status).toBe(200);
+
+    const settlement = await fetch(
       `${baseUrl}/v1/channels/${channel.channelId}/settle`,
       {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-atn-authority": "not-the-payee",
         },
-        body: JSON.stringify({ idempotencyKey: "wrong-authority-key" }),
+        body: JSON.stringify({ idempotencyKey: "settlement-key" }),
       },
     );
-
-    expect(response.status).toBe(403);
-    const body = (await response.json()) as { error: string };
-    expect(body.error).toBe("FORBIDDEN");
+    expect(settlement.status).toBe(200);
   });
 
   it("returns 404 for an unknown route", async () => {

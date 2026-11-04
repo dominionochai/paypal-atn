@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from 'node:crypto';
 import type { Database } from '../db/db.js';
 
 interface AgentRow {
   id: number;
   revoked_at: number | null;
   budget_micro: number | null;
+  ed25519_public_key: string;
 }
 
 interface DelegationRow {
@@ -14,12 +15,14 @@ interface DelegationRow {
   revoked_at: number | null;
   scope_json: string | null;
   counterparty_allowlist_json: string | null;
+  status: string;
 }
 
 interface ReservationRow {
   id: number;
   status: string;
   expires_at: number;
+  reservation_ref: string | null;
 }
 
 export type DenyCode =
@@ -32,7 +35,15 @@ export type DenyCode =
   | 'CEILING_EXCEEDED'
   | 'BUDGET_EXHAUSTED'
   | 'COUNTERPARTY_DENIED'
-  | 'RESERVATION_EXPIRED';
+  | 'RESERVATION_EXPIRED'
+  | 'INTERNAL'
+  | 'FORGED_SIGNATURE'
+  | 'WRONG_KEY'
+  | 'EXPIRED'
+  | 'NOT_YET_VALID'
+  | 'OVER_CEILING'
+  | 'REPLAYED'
+  | 'SKEWED_TIMESTAMP';
 
 export type AuthorityDecision =
   | { allowed: true; agentId: string; delegationId: string; remainingBudget: number }
@@ -50,35 +61,16 @@ interface SumRow {
   total: number | null;
 }
 
-interface PragmaColumn {
-  cid: number;
-  name: string;
-  type: string;
-  notnull: number;
-  dflt_value: unknown;
-  pk: number;
-}
-
-function isPragmaColumn(value: unknown): value is PragmaColumn {
-  if (typeof value !== 'object' || value === null) return false;
-  return (
-    'cid' in value && typeof value.cid === 'number' &&
-    'name' in value && typeof value.name === 'string' &&
-    'type' in value && typeof value.type === 'string' &&
-    'notnull' in value && typeof value.notnull === 'number' &&
-    'dflt_value' in value &&
-    'pk' in value && typeof value.pk === 'number'
-  );
-}
-
-function readTableInfo(db: Database, tableName: 'budget_reservations'): readonly PragmaColumn[] {
-  const result: unknown = db.pragma(`table_info(${tableName})`);
-  if (!Array.isArray(result)) return [];
-  return result.filter(isPragmaColumn);
-}
-
-function hasReservationExpiryColumn(db: Database): boolean {
-  return readTableInfo(db, 'budget_reservations').some((column) => column.name === 'expires_at');
+interface VaultRow {
+  id: string;
+  delegation_id: number;
+  funded: number;
+  reserved: number;
+  committed: number;
+  state: string;
+  expires_at: string;
+  opened_at: string;
+  funding_ref_hash: string;
 }
 
 function denied(code: DenyCode, detail: string): AuthorityDecision {
@@ -118,16 +110,11 @@ function addAuditEvent(
 
 function findReservation(db: Database, reservationId: string): ReservationRow | undefined {
   return db.prepare(
-    `SELECT r.id, r.status, r.expires_at
-       FROM budget_reservations AS r
-       JOIN audit_events AS e
-         ON e.entity_type = 'budget_reservation'
-        AND e.entity_id = r.id
-        AND e.event = 'reservation.reserved'
-      WHERE json_extract(e.payload, '$.reservationId') = ?
-      ORDER BY e.id DESC
+    `SELECT id, status, expires_at, reservation_ref
+       FROM budget_reservations
+      WHERE reservation_ref = ? OR id = ?
       LIMIT 1`,
-  ).get(reservationId) as ReservationRow | undefined;
+  ).get(reservationId, Number(reservationId) || -1) as ReservationRow | undefined;
 }
 
 class AuthorityFailure extends Error {
@@ -140,11 +127,11 @@ class AuthorityFailure extends Error {
 export function authorize(db: Database, req: AuthorityRequest): AuthorityDecision {
   try {
     const nowSeconds = req.now ?? Math.floor(Date.now() / 1000);
-    const nowMilliseconds = nowSeconds * 1000;
+    const nowMilliseconds = nowSeconds > 1e11 ? nowSeconds : nowSeconds * 1000;
 
     return db.transaction((): AuthorityDecision => {
       const agent = db.prepare(
-        `SELECT id, revoked_at, budget_micro
+        `SELECT id, revoked_at, budget_micro, ed25519_public_key
            FROM agents
           WHERE external_id = ?`,
       ).get(req.agentId) as AgentRow | undefined;
@@ -157,19 +144,17 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
       }
 
       const delegation = db.prepare(
-        `SELECT d.id, d.budget_ceiling, d.expires_at, d.revoked_at,
-                d.scope_json, d.counterparty_allowlist_json
-           FROM delegations AS d
-           JOIN principals AS p ON p.id = d.principal_id
-          WHERE d.agent_id = ?
-            AND p.external_id = ?
-            AND d.status = 'ACTIVE'
-          ORDER BY d.id
+        `SELECT id, budget_ceiling, expires_at, revoked_at,
+                scope_json, counterparty_allowlist_json, status
+           FROM delegations
+          WHERE agent_id = ?
+            AND status = 'ACTIVE'
+          ORDER BY id
           LIMIT 1`,
-      ).get(agent.id, req.counterpartyId) as DelegationRow | undefined;
+      ).get(agent.id) as DelegationRow | undefined;
 
       if (delegation === undefined) {
-        return denied('DELEGATION_MISSING', 'No active delegation exists for this agent and counterparty.');
+        return denied('DELEGATION_MISSING', 'No active delegation exists for this agent.');
       }
       if (delegation.expires_at !== null) {
         const expiryMilliseconds = Date.parse(delegation.expires_at);
@@ -177,7 +162,7 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
           return denied('DELEGATION_EXPIRED', 'The delegation has expired.');
         }
       }
-      if (delegation.revoked_at !== null) {
+      if (delegation.revoked_at !== null || delegation.status === 'REVOKED') {
         return denied('DELEGATION_REVOKED', 'The delegation has been revoked.');
       }
       if (!jsonListIncludes(delegation.counterparty_allowlist_json, req.counterpartyId)) {
@@ -272,7 +257,7 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
       };
     })();
   } catch {
-    return denied('UNKNOWN_AGENT', 'Authorization could not be completed because the database operation failed.');
+    return denied('INTERNAL', 'Authorization could not be completed because the database operation failed.');
   }
 }
 
@@ -281,6 +266,8 @@ export function reserve(
   decision: Extract<AuthorityDecision, { allowed: true }>,
   amount: number,
   ttlSeconds: number,
+  now?: number,
+  reservationRef?: string,
 ): { reservationId: string; expiresAt: number } {
   if (!isSafeMicroAmount(amount) || amount === 0) {
     throw new RangeError('Reservation amount must be a positive safe integer in micro-dollars.');
@@ -288,38 +275,47 @@ export function reserve(
   if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) {
     throw new RangeError('Reservation TTL must be a positive safe integer in seconds.');
   }
-  if (!hasReservationExpiryColumn(db)) {
-    throw new Error('The trust schema migration has not added budget_reservations.expires_at.');
-  }
 
-  const reservationId = randomUUID();
-  const expiresAt = Date.now() + ttlSeconds * 1000;
+  const baseTime = now !== undefined ? now : Date.now();
+  const nowMs = baseTime > 1e11 ? baseTime : baseTime * 1000;
+  const reservationId = reservationRef ?? randomUUID();
+  const expiresAt = nowMs + ttlSeconds * 1000;
   if (!Number.isSafeInteger(expiresAt)) {
     throw new RangeError('Reservation expiry exceeds the safe integer range.');
   }
 
   return db.transaction(() => {
-    const nowMilliseconds = Date.now();
+    const delegationIdNum = Number(decision.delegationId);
     const ceilingRow = db.prepare('SELECT budget_ceiling FROM delegations WHERE id = ?')
-      .get(Number(decision.delegationId)) as { budget_ceiling: number } | undefined;
+      .get(delegationIdNum) as { budget_ceiling: number } | undefined;
     if (ceilingRow === undefined) {
       throw new RangeError('The delegation for this reservation no longer exists.');
     }
     const committed = (db.prepare(
       "SELECT COALESCE((SELECT SUM(t.amount) FROM transactions AS t WHERE t.delegation_id = ? AND t.state = 'SETTLED'), 0) " +
       "+ COALESCE((SELECT SUM(r.amount) FROM budget_reservations AS r WHERE r.delegation_id = ? AND r.status = 'SETTLED' AND r.transaction_id IS NULL), 0) AS total",
-    ).get(Number(decision.delegationId), Number(decision.delegationId)) as SumRow | undefined)?.total ?? 0;
+    ).get(delegationIdNum, delegationIdNum) as SumRow | undefined)?.total ?? 0;
     const held = (db.prepare(
       "SELECT COALESCE(SUM(amount), 0) AS total FROM budget_reservations WHERE delegation_id = ? AND status = 'RESERVED' AND expires_at > ?",
-    ).get(Number(decision.delegationId), nowMilliseconds) as SumRow | undefined)?.total ?? 0;
+    ).get(delegationIdNum, nowMs) as SumRow | undefined)?.total ?? 0;
     if (amount > ceilingRow.budget_ceiling - committed - held) {
       throw new RangeError('Reservation amount exceeds the remaining delegation ceiling.');
     }
+
+    const vault = db.prepare('SELECT id, funded, reserved, committed FROM vaults WHERE delegation_id = ? AND state = \'OPEN\'')
+      .get(delegationIdNum) as VaultRow | undefined;
+    if (vault !== undefined) {
+      if (vault.reserved + vault.committed + amount > vault.funded) {
+        throw new RangeError('Reservation amount exceeds vault funded ceiling.');
+      }
+      db.prepare('UPDATE vaults SET reserved = reserved + ? WHERE id = ?').run(amount, vault.id);
+    }
+
     const insert = db.prepare(
       `INSERT INTO budget_reservations
-         (delegation_id, transaction_id, amount, status, expires_at)
-       VALUES (?, NULL, ?, 'RESERVED', ?)`,
-    ).run(Number(decision.delegationId), amount, expiresAt);
+         (delegation_id, transaction_id, amount, status, expires_at, reservation_ref)
+       VALUES (?, NULL, ?, 'RESERVED', ?, ?)`,
+    ).run(delegationIdNum, amount, expiresAt, reservationId);
     const insertedId = insert.lastInsertRowid;
     const entityId = typeof insertedId === 'bigint' ? Number(insertedId) : insertedId;
     if (!Number.isSafeInteger(entityId)) {
@@ -336,14 +332,16 @@ export function reserve(
   }).immediate();
 }
 
-export function commit(db: Database, reservationId: string): void {
+export function commit(db: Database, reservationId: string, now?: number): void {
+  const baseTime = now !== undefined ? now : Date.now();
+  const nowMs = baseTime > 1e11 ? baseTime : baseTime * 1000;
   const expired = db.transaction((): boolean => {
     const reservation = findReservation(db, reservationId);
     if (reservation === undefined) {
       throw new Error('Reservation was not found.');
     }
     if (reservation.status !== 'RESERVED') return false;
-    if (reservation.expires_at <= Date.now()) {
+    if (reservation.expires_at <= nowMs) {
       const result = db.prepare(
         `UPDATE budget_reservations SET status = 'EXPIRED'
           WHERE id = ? AND status = 'RESERVED'`,
@@ -352,6 +350,14 @@ export function commit(db: Database, reservationId: string): void {
         addAuditEvent(db, reservation.id, 'reservation.expired', { reason: 'ttl_elapsed' }, null);
       }
       return true;
+    }
+
+    const resRow = db.prepare('SELECT delegation_id, amount FROM budget_reservations WHERE id = ?').get(reservation.id) as { delegation_id: number; amount: number } | undefined;
+    if (resRow) {
+      const vault = db.prepare('SELECT id FROM vaults WHERE delegation_id = ? AND state = \'OPEN\'').get(resRow.delegation_id) as { id: string } | undefined;
+      if (vault) {
+        db.prepare('UPDATE vaults SET reserved = reserved - ?, committed = committed + ? WHERE id = ?').run(resRow.amount, resRow.amount, vault.id);
+      }
     }
 
     const result = db.prepare(
@@ -369,11 +375,13 @@ export function commit(db: Database, reservationId: string): void {
   }
 }
 
-export function release(db: Database, reservationId: string): void {
+export function release(db: Database, reservationId: string, now?: number): void {
+  const baseTime = now !== undefined ? now : Date.now();
+  const nowMs = baseTime > 1e11 ? baseTime : baseTime * 1000;
   db.transaction(() => {
     const reservation = findReservation(db, reservationId);
     if (reservation === undefined || reservation.status !== 'RESERVED') return;
-    if (reservation.expires_at <= Date.now()) {
+    if (reservation.expires_at <= nowMs) {
       const result = db.prepare(
         `UPDATE budget_reservations SET status = 'EXPIRED'
           WHERE id = ? AND status = 'RESERVED'`,
@@ -382,6 +390,14 @@ export function release(db: Database, reservationId: string): void {
         addAuditEvent(db, reservation.id, 'reservation.expired', { reason: 'ttl_elapsed' }, null);
       }
       return;
+    }
+
+    const resRow = db.prepare('SELECT delegation_id, amount FROM budget_reservations WHERE id = ?').get(reservation.id) as { delegation_id: number; amount: number } | undefined;
+    if (resRow) {
+      const vault = db.prepare('SELECT id FROM vaults WHERE delegation_id = ? AND state = \'OPEN\'').get(resRow.delegation_id) as { id: string } | undefined;
+      if (vault) {
+        db.prepare('UPDATE vaults SET reserved = reserved - ? WHERE id = ?').run(resRow.amount, vault.id);
+      }
     }
 
     const result = db.prepare(
@@ -400,17 +416,95 @@ export function reserveAndCommit(
   decision: Extract<AuthorityDecision, { allowed: true }>,
   amount: number,
   ttlSeconds: number,
+  now?: number,
+  reservationRef?: string,
 ): { reservationId: string } {
-  const reservation = reserve(db, decision, amount, ttlSeconds);
+  const reservation = reserve(db, decision, amount, ttlSeconds, now, reservationRef);
   try {
-    commit(db, reservation.reservationId);
+    commit(db, reservation.reservationId, now);
   } catch (error: unknown) {
     try {
-      release(db, reservation.reservationId);
+      release(db, reservation.reservationId, now);
     } catch {
-      // Preserve the original commit failure after the compensating release attempt.
+      // Preserve original commit failure after compensating release attempt.
     }
     throw error;
   }
   return { reservationId: reservation.reservationId };
+}
+
+export function createVault(
+  db: Database,
+  options: { delegationId: number | string; funded: number; fundingRef: string; ttlSeconds?: number; now?: number },
+): { id: string; funded: number; expiresAt: string; state: string } {
+  const vaultId = randomUUID();
+  const delegationIdNum = Number(options.delegationId);
+  const delegation = db.prepare('SELECT expires_at FROM delegations WHERE id = ?').get(delegationIdNum) as { expires_at: string | null } | undefined;
+  if (!delegation) {
+    throw new Error('Delegation not found for vault creation.');
+  }
+
+  const baseTime = options.now !== undefined ? options.now : Date.now();
+  const nowMs = baseTime > 1e11 ? baseTime : baseTime * 1000;
+  const openedAtIso = new Date(nowMs).toISOString();
+  const thirtyMinLaterMs = nowMs + 30 * 60 * 1000;
+
+  let expiryMs = thirtyMinLaterMs;
+  if (delegation.expires_at !== null) {
+    const delegationExpMs = Date.parse(delegation.expires_at);
+    if (Number.isFinite(delegationExpMs)) {
+      expiryMs = Math.min(delegationExpMs, thirtyMinLaterMs);
+    }
+  }
+  if (options.ttlSeconds !== undefined) {
+    expiryMs = Math.min(expiryMs, nowMs + options.ttlSeconds * 1000);
+  }
+  const expiresAtIso = new Date(expiryMs).toISOString();
+  const fundingRefHash = createHash('sha256').update(options.fundingRef).digest('hex');
+
+  db.prepare(
+    `INSERT INTO vaults (id, delegation_id, funded, state, expires_at, opened_at, funding_ref_hash)
+     VALUES (?, ?, ?, 'OPEN', ?, ?, ?)`,
+  ).run(vaultId, delegationIdNum, options.funded, expiresAtIso, openedAtIso, fundingRefHash);
+
+  return { id: vaultId, funded: options.funded, expiresAt: expiresAtIso, state: 'OPEN' };
+}
+
+export function getVault(db: Database, vaultId: string): VaultRow | undefined {
+  return db.prepare('SELECT * FROM vaults WHERE id = ?').get(vaultId) as VaultRow | undefined;
+}
+
+export function revokeDelegation(db: Database, delegationId: number | string, now?: number): void {
+  const delegationIdNum = Number(delegationId);
+  db.transaction(() => {
+    db.prepare("UPDATE delegations SET status = 'REVOKED', revoked_at = ? WHERE id = ?").run(Math.floor((now ?? Date.now()) / 1000), delegationIdNum);
+    const reservedList = db.prepare("SELECT id FROM budget_reservations WHERE delegation_id = ? AND status = 'RESERVED'").all(delegationIdNum) as Array<{ id: number }>;
+    for (const res of reservedList) {
+      release(db, String(res.id), now);
+    }
+    db.prepare("UPDATE vaults SET state = 'REVOKED' WHERE delegation_id = ? AND state = 'OPEN'").run(delegationIdNum);
+  })();
+}
+
+export function revokeVault(db: Database, vaultId: string, now?: number): void {
+  db.transaction(() => {
+    const vault = getVault(db, vaultId);
+    if (!vault) return;
+    db.prepare("UPDATE vaults SET state = 'REVOKED' WHERE id = ?").run(vaultId);
+    revokeDelegation(db, vault.delegation_id, now);
+  })();
+}
+
+export function sweepExpired(db: Database, now?: number): void {
+  const baseTime = now !== undefined ? now : Date.now();
+  const nowMs = baseTime > 1e11 ? baseTime : baseTime * 1000;
+  const nowIso = new Date(nowMs).toISOString();
+
+  db.transaction(() => {
+    db.prepare("UPDATE vaults SET state = 'EXPIRED' WHERE state = 'OPEN' AND expires_at <= ?").run(nowIso);
+    const stale = db.prepare("SELECT id FROM budget_reservations WHERE status = 'RESERVED' AND expires_at <= ?").all(nowMs) as Array<{ id: number }>;
+    for (const res of stale) {
+      release(db, String(res.id), nowMs);
+    }
+  })();
 }
