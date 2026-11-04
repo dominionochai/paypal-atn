@@ -190,7 +190,7 @@ async function run() {
     agentId: PAYER,
     ceiling: CEILING,
     scope: ['invoice.pay'],
-    counterparties: ['merchant-1'],
+    counterparties: [PAYEE],
     notBefore: null,
     expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
     nonce: 'nonce-del-1',
@@ -242,9 +242,9 @@ async function run() {
   else add('Principal opens vault (signed)', 'FAIL', 'HTTP ' + vaultResp.status + ' ' + vaultResp.raw);
   const vaultId = vaultResp.json?.id;
 
-  // Create channel (signed request)
+  // Create channel (signed request) - NEW API: uses vaultId instead of payerPublicKey/ceiling
   const created = await call(base, 'POST', '/v1/channels', {
-    payerAgentId: PAYER, payeeAgentId: PAYEE, payerPublicKey: payerSetupPubPem, ceiling: CEILING, ttlSeconds: 600,
+    payerAgentId: PAYER, payeeAgentId: PAYEE, vaultId: vaultId, ttlSeconds: 600,
   }, adminHeaders, PAYER, payerSetupPrivPem);
   const channelId = created.json?.channelId;
   if (created.status === 201 && typeof channelId === 'string') add('Create channel (signed request)', 'PASS', 'ceiling ' + created.json.ceiling);

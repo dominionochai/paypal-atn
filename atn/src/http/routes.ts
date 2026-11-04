@@ -1,7 +1,7 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { randomUUID, createHash } from 'node:crypto';
 import type { Database } from '../db/db.js';
-import { openChannel, getChannel, acceptVoucher, settleChannel, AlreadySettledError, UnknownChannelError } from '../streaming/channel.js';
+import { openChannel, getChannel, acceptVoucher, settleChannel, closeChannel, AlreadySettledError, UnknownChannelError } from '../streaming/channel.js';
 import type { VoucherInput } from '../streaming/voucher.js';
 import { SimulatedAdapter } from '../payments/adapter.js';
 import { createEscrow, inspectEscrow, refundEscrow } from '../escrow/escrow.js';
@@ -418,14 +418,30 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
     if (method === 'POST' && segments.length === 2 && segments[0] === 'v1' && segments[1] === 'channels') {
       const parsed = parseJsonBody(body);
       if (!parsed) return bad('body must be a JSON object');
-      const { payerAgentId, payeeAgentId, payerPublicKey, ceiling, ttlSeconds } = parsed;
+      const { payerAgentId, payeeAgentId, vaultId, ttlSeconds } = parsed;
       if (!nonEmptyString(payerAgentId)) return bad('payerAgentId must be a non-empty string');
       if (!nonEmptyString(payeeAgentId)) return bad('payeeAgentId must be a non-empty string');
-      if (!nonEmptyString(payerPublicKey)) return bad('payerPublicKey must be a non-empty string');
-      if (!positiveInt(ceiling)) return bad('ceiling must be a positive integer in micro-dollars');
+      if (!nonEmptyString(vaultId)) return bad('vaultId must be a non-empty string');
       if (!positiveInt(ttlSeconds)) return bad('ttlSeconds must be a positive integer');
-      const channel = openChannel(db, { payerAgentId, payeeAgentId, payerPublicKey, ceiling, ttlSeconds });
-      return json(201, { channelId: channel.id, ceiling: channel.ceiling, expiresAt: channel.expires_at });
+      // ceiling comes from the vault's funded amount
+      const vault = getVault(db, vaultId);
+      if (!vault) return json(404, { error: 'NOT_FOUND', detail: 'vault not found' });
+      if (vault.state !== 'OPEN') return json(422, { error: 'VAULT_CLOSED', detail: 'vault is not open' });
+      const vaultExpMs = Date.parse(vault.expires_at);
+      if (Number.isFinite(vaultExpMs) && vaultExpMs <= Date.now()) return json(422, { error: 'VAULT_EXPIRED', detail: 'vault has expired' });
+      try {
+        const channel = openChannel(db, { payerAgentId, payeeAgentId, vaultId, ceiling: vault.funded, ttlSeconds });
+        return json(201, { channelId: channel.id, ceiling: channel.ceiling, expiresAt: channel.expires_at, vaultId: channel.vault_id });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (process.env.NODE_ENV === 'test') console.error('[DEBUG] openChannel error:', msg);
+        if (msg.includes('Vault') || msg.includes('vault')) return json(404, { error: 'NOT_FOUND', detail: msg });
+        if (msg.includes('Payee') || msg.includes('counterpart')) return json(422, { error: 'COUNTERPARTY_DENIED', detail: msg });
+        if (msg.includes('revoked') || msg.includes('Revoked')) return json(422, { error: 'AGENT_REVOKED', detail: msg });
+        if (msg.includes('expired') || msg.includes('Expired')) return json(422, { error: 'EXPIRED', detail: msg });
+        if (process.env.NODE_ENV === 'test') console.error('[DEBUG] Returning UNPROCESSABLE for:', msg);
+        return unprocessable(msg, 'UNPROCESSABLE');
+      }
     }
 
     if (segments.length >= 3 && segments[0] === 'v1' && segments[1] === 'channels') {
@@ -452,7 +468,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return bad('payload must be an object');
         if (!nonEmptyString(signature)) return bad('signature must be a non-empty string');
         const voucher: VoucherInput = { payload: payload as VoucherInput['payload'], signature };
-        const result = acceptVoucher(db, channelId, voucher, input.delegationBudget);
+        const result = acceptVoucher(db, channelId, voucher, 0); // delegationBudget no longer used
         if (!result.ok) {
           const status = result.code === 'REPLAYED' ? 409 : 422;
           return json(status, { error: result.code, detail: result.detail });
@@ -481,6 +497,19 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
           if (e instanceof AlreadySettledError) return json(409, { error: 'ALREADY_SETTLED', detail });
           if (e instanceof UnknownChannelError) return json(404, { error: 'NOT_FOUND', detail });
           throw e;
+        }
+      }
+
+      // POST /v1/channels/:id/close - signed by payer or payee
+      if (method === 'POST' && segments.length === 4 && segments[3] === 'close') {
+        try {
+          const closed = closeChannel(db, channelId);
+          return json(200, { channelId: closed.channelId, amount: closed.amount, status: 'CLOSED' });
+        } catch (e) {
+          const detail = e instanceof Error ? e.message : String(e);
+          if (e instanceof UnknownChannelError) return json(404, { error: 'NOT_FOUND', detail });
+          if (e instanceof AlreadySettledError) return json(409, { error: 'ALREADY_SETTLED', detail });
+          return unprocessable(detail, 'UNPROCESSABLE');
         }
       }
     }

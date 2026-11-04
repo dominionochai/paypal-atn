@@ -127,7 +127,7 @@ describe('R2c HTTP-level tests with real signatures', () => {
       agentId: 'payer-1',
       ceiling: 50_000_000,
       scope: ['invoice.pay'],
-      counterparties: ['merchant-1'],
+      counterparties: ['payee-1'],
       notBefore: null,
       expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
       nonce: 'nonce-del-1',
@@ -254,10 +254,24 @@ describe('R2c HTTP-level tests with real signatures', () => {
   });
 
   it('ACTOR_MISMATCH for payee (settle with wrong payee)', async () => {
-    // Create channel first
+    // Create vault first
+    const fundingRef = createHash('sha256').update('secret||nonce').digest('hex');
+    const vaultResp = await signedFetch(baseUrl, 'POST', '/v1/vaults', {
+      delegationId: 1,
+      funded: 50_000_000,
+      fundingRef,
+    }, 'principal-1', principalKeys.privateKey);
+    expect(vaultResp.status).toBe(201);
+    const { id: vaultId } = await vaultResp.json() as { id: string };
+
+    // Create channel using vault
     const channelResp = await signedFetch(baseUrl, 'POST', '/v1/channels', {
-      payerAgentId: 'payer-1', payeeAgentId: 'payee-1', payerPublicKey: payerKeys.publicKey, ceiling: 10_000, ttlSeconds: 3_600,
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      vaultId: vaultId,
+      ttlSeconds: 3_600,
     }, 'payer-1', payerKeys.privateKey);
+    expect(channelResp.status).toBe(201);
     const { channelId } = await channelResp.json() as { channelId: string };
 
     // Submit voucher
@@ -272,9 +286,24 @@ describe('R2c HTTP-level tests with real signatures', () => {
   });
 
   it('ACTOR_MISMATCH for voucher submit (wrong payer)', async () => {
+    // Create vault first
+    const fundingRef = createHash('sha256').update('secret||nonce').digest('hex');
+    const vaultResp = await signedFetch(baseUrl, 'POST', '/v1/vaults', {
+      delegationId: 1,
+      funded: 50_000_000,
+      fundingRef,
+    }, 'principal-1', principalKeys.privateKey);
+    expect(vaultResp.status).toBe(201);
+    const { id: vaultId } = await vaultResp.json() as { id: string };
+
+    // Create channel using vault
     const channelResp = await signedFetch(baseUrl, 'POST', '/v1/channels', {
-      payerAgentId: 'payer-1', payeeAgentId: 'payee-1', payerPublicKey: payerKeys.publicKey, ceiling: 10_000, ttlSeconds: 3_600,
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      vaultId: vaultId,
+      ttlSeconds: 3_600,
     }, 'payer-1', payerKeys.privateKey);
+    expect(channelResp.status).toBe(201);
     const { channelId } = await channelResp.json() as { channelId: string };
 
     // Try to submit voucher as payee (should be payer)
@@ -437,7 +466,7 @@ describe('R2c HTTP-level tests with real signatures', () => {
     const dec = authorize(db, {
       agentId: 'payer-1',
       action: 'invoice.pay',
-      counterpartyId: 'merchant-1',
+      counterpartyId: 'payee-1',
       amount: 10_000_000,
       now: Date.now() + 2_000, // 2 seconds later
     });

@@ -85,6 +85,14 @@ function signVoucher(channelId: string, payeeAgentId: string, cumulativeAmount: 
   return { payload, signature };
 }
 
+function signDelegation(payload: Record<string, unknown>, privateKeyPem: string): string {
+  const bytes = Buffer.concat([
+    Buffer.from('ATN-DELEGATION-v1\n', 'utf8'),
+    Buffer.from(canonicalJson(payload), 'utf8'),
+  ]);
+  return sign(null, bytes, privateKeyPem).toString('base64');
+}
+
 beforeEach(async () => {
   tempDir = await mkdtemp(join(tmpdir(), "atn-http-test-"));
   db = openDatabase(join(tempDir, "test.sqlite"));
@@ -146,6 +154,52 @@ beforeEach(async () => {
     body: JSON.stringify({ externalId: 'payee-1', principalExternalId: 'principal-1', name: 'Payee', publicKey: payeeKeys.publicKey }),
   });
   expect(payeeResp.status).toBe(201);
+
+  // Create delegation (directly in DB since /v1/delegations requires principal-signed envelope)
+  // We'll create it via SQL and then use it for vault creation
+  const principalRow = db.prepare('SELECT id FROM principals WHERE external_id = ?').get('principal-1');
+  const payerAgentRow = db.prepare('SELECT id FROM agents WHERE external_id = ?').get('payer-1');
+  const delegationPayload = {
+    version: 1,
+    delegationId: 'del-1',
+    principalId: 'principal-1',
+    agentId: 'payer-1',
+    ceiling: 50_000_000,
+    scope: ['invoice.pay'],
+    counterparties: ['payee-1'],
+    notBefore: null,
+    expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+    nonce: 'nonce-del-1',
+  };
+  const delegationSig = signDelegation(delegationPayload, principalKeys.privateKey);
+
+  db.prepare(
+    `INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling, currency, status, expires_at, scope_json, counterparty_allowlist_json, nonce, not_before, signature)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    'del-1',
+    principalRow.id,
+    payerAgentRow.id,
+    50_000_000,
+    'USD',
+    'ACTIVE',
+    delegationPayload.expiresAt,
+    JSON.stringify(delegationPayload.scope),
+    JSON.stringify(delegationPayload.counterparties),
+    delegationPayload.nonce,
+    delegationPayload.notBefore,
+    delegationSig
+  );
+
+  // Create vault using principal-signed envelope
+  const fundingRef = createHash('sha256').update('test-funding-ref').digest('hex');
+  const vaultResp = await signedFetch(baseUrl, 'POST', '/v1/vaults', {
+    delegationId: 1,
+    funded: 50_000_000,
+    fundingRef,
+  }, 'principal-1', principalKeys.privateKey);
+  expect(vaultResp.status).toBe(201);
+  const { id: vaultId } = await vaultResp.json() as { id: string };
 });
 
 afterEach(async () => {
@@ -159,19 +213,34 @@ afterEach(async () => {
   await rm(tempDir, { recursive: true, force: true });
 });
 
-describe("HTTP API with signed requests", () => {
+describe("HTTP API with signed requests (N1+N2)", () => {
+  let vaultId: string;
+
+  beforeEach(async () => {
+    // Re-create vault for each test (since each test has its own DB)
+    // Actually the vault is created in beforeEach above
+    const vaultResp = await signedFetch(baseUrl, 'POST', '/v1/vaults', {
+      delegationId: 1,
+      funded: 50_000_000,
+      fundingRef: createHash('sha256').update('test-funding-ref').digest('hex'),
+    }, 'principal-1', principalKeys.privateKey);
+    expect(vaultResp.status).toBe(201);
+    const vault = await vaultResp.json() as { id: string };
+    vaultId = vault.id;
+  });
+
   it("creates a channel and retrieves it by its returned id", async () => {
     const response = await signedFetch(baseUrl, 'POST', '/v1/channels', {
       payerAgentId: 'payer-1',
       payeeAgentId: 'payee-1',
-      payerPublicKey: payerKeys.publicKey,
-      ceiling: 10_000,
+      vaultId: vaultId,
       ttlSeconds: 3_600,
     }, 'payer-1', payerKeys.privateKey);
 
     expect(response.status).toBe(201);
-    const body = (await response.json()) as { channelId?: unknown };
+    const body = (await response.json()) as { channelId?: unknown; ceiling?: number };
     expect(typeof body.channelId).toBe("string");
+    expect(typeof body.ceiling).toBe("number");
     const channelId = body.channelId as string;
 
     const retrieved = await fetch(`${baseUrl}/v1/channels/${channelId}`);
@@ -185,11 +254,10 @@ describe("HTTP API with signed requests", () => {
     const channelResp = await signedFetch(baseUrl, 'POST', '/v1/channels', {
       payerAgentId: 'payer-1',
       payeeAgentId: 'payee-1',
-      payerPublicKey: payerKeys.publicKey,
-      ceiling: 10_000,
+      vaultId: vaultId,
       ttlSeconds: 3_600,
     }, 'payer-1', payerKeys.privateKey);
-    const { channelId } = await channelResp.json() as { channelId: string };
+    const { channelId, ceiling } = await channelResp.json() as { channelId: string; ceiling: number };
 
     const voucher = signVoucher(channelId, 'payee-1', 1_250, 1, payerKeys.privateKey);
 
@@ -209,11 +277,10 @@ describe("HTTP API with signed requests", () => {
     const channelResp = await signedFetch(baseUrl, 'POST', '/v1/channels', {
       payerAgentId: 'payer-1',
       payeeAgentId: 'payee-1',
-      payerPublicKey: payerKeys.publicKey,
-      ceiling: 10_000,
+      vaultId: vaultId,
       ttlSeconds: 3_600,
     }, 'payer-1', payerKeys.privateKey);
-    const { channelId } = await channelResp.json() as { channelId: string };
+    const { channelId, ceiling } = await channelResp.json() as { channelId: string; ceiling: number };
 
     const voucher = signVoucher(channelId, 'payee-1', 1_250, 1, payerKeys.privateKey);
     await signedFetch(baseUrl, 'POST', `/v1/channels/${channelId}/vouchers`, voucher, 'payer-1', payerKeys.privateKey);
@@ -234,8 +301,7 @@ describe("HTTP API with signed requests", () => {
     const channelResp = await signedFetch(baseUrl, 'POST', '/v1/channels', {
       payerAgentId: 'payer-1',
       payeeAgentId: 'payee-1',
-      payerPublicKey: payerKeys.publicKey,
-      ceiling: 10_000,
+      vaultId: vaultId,
       ttlSeconds: 3_600,
     }, 'payer-1', payerKeys.privateKey);
     const { channelId } = await channelResp.json() as { channelId: string };
@@ -282,10 +348,107 @@ describe("HTTP API with signed requests", () => {
     const response = await fetch(`${baseUrl}/v1/channels`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ payerAgentId: "payer-1", payeeAgentId: "payee-1", payerPublicKey: "x", ceiling: 1000, ttlSeconds: 60 }),
+      body: JSON.stringify({ payerAgentId: "payer-1", payeeAgentId: "payee-1", vaultId: "x", ttlSeconds: 60 }),
     });
     expect(response.status).toBe(401);
     const body = (await response.json()) as { error: string };
     expect(body.error).toBe("MISSING_ENVELOPE");
+  });
+
+  it("rejects channel creation with non-existent vault", async () => {
+    const response = await signedFetch(baseUrl, 'POST', '/v1/channels', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      vaultId: 'non-existent-vault',
+      ttlSeconds: 3_600,
+    }, 'payer-1', payerKeys.privateKey);
+    expect(response.status).toBe(404);
+  });
+
+  it("rejects channel creation with wrong payee (not in counterparties)", async () => {
+    // Create another agent not in counterparties
+    const otherKp = generateKeyPairSync('ed25519');
+    const otherPubPem = otherKp.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const adminHeaders = { 'authorization': `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' };
+    await fetch(`${baseUrl}/v1/agents`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ externalId: 'other-agent', principalExternalId: 'principal-1', name: 'Other', publicKey: otherPubPem }),
+    });
+
+    const response = await signedFetch(baseUrl, 'POST', '/v1/channels', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'other-agent',
+      vaultId: vaultId,
+      ttlSeconds: 3_600,
+    }, 'payer-1', payerKeys.privateKey);
+    expect(response.status).toBe(422);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('COUNTERPARTY_DENIED');
+  });
+
+  it("rejects voucher with stale issuedAt", async () => {
+    const channelResp = await signedFetch(baseUrl, 'POST', '/v1/channels', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      vaultId: vaultId,
+      ttlSeconds: 3_600,
+    }, 'payer-1', payerKeys.privateKey);
+    const { channelId } = await channelResp.json() as { channelId: string };
+
+    // Create voucher with issuedAt 61 seconds ago
+    const oldTime = Date.now() - 61_000;
+    const payload = { channelId, payeeAgentId: 'payee-1', cumulativeAmount: 1_250, nonce: 1, issuedAt: oldTime };
+    const canonicalBytes = (p: typeof payload) => {
+      const parts = [];
+      const str = (s: string) => { const b = Buffer.from(s, 'utf8'); const len = Buffer.alloc(4); len.writeUInt32BE(b.length, 0); parts.push(len, b); };
+      const i64 = (n: number) => { const b = Buffer.alloc(8); b.writeBigInt64BE(BigInt(n), 0); parts.push(b); };
+      str(p.channelId); str(p.payeeAgentId); i64(p.cumulativeAmount); i64(p.nonce); i64(p.issuedAt);
+      return Buffer.concat(parts);
+    };
+    const signature = sign(null, canonicalBytes(payload), payerKeys.privateKey).toString('base64');
+    const voucher = { payload, signature };
+
+    const response = await signedFetch(baseUrl, 'POST', `/v1/channels/${channelId}/vouchers`, voucher, 'payer-1', payerKeys.privateKey);
+    expect(response.status).toBe(422);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('ISSUED_AT_SKEW');
+  });
+
+  it("rejects voucher when vault is revoked", async () => {
+    const channelResp = await signedFetch(baseUrl, 'POST', '/v1/channels', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      vaultId: vaultId,
+      ttlSeconds: 3_600,
+    }, 'payer-1', payerKeys.privateKey);
+    const { channelId } = await channelResp.json() as { channelId: string };
+
+    // Revoke the vault
+    const revokeResp = await signedFetch(baseUrl, 'POST', `/v1/vaults/${vaultId}/revoke`, {}, 'principal-1', principalKeys.privateKey);
+    expect(revokeResp.status).toBe(200);
+
+    // Try to submit voucher
+    const voucher = signVoucher(channelId, 'payee-1', 1_250, 1, payerKeys.privateKey);
+    const response = await signedFetch(baseUrl, 'POST', `/v1/channels/${channelId}/vouchers`, voucher, 'payer-1', payerKeys.privateKey);
+    expect(response.status).toBe(422);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('VAULT_REVOKED');
+  });
+
+  it("ignores client-supplied payerPublicKey in channel creation", async () => {
+    // The new API doesn't accept payerPublicKey or ceiling in the body
+    const response = await signedFetch(baseUrl, 'POST', '/v1/channels', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      vaultId: vaultId,
+      ttlSeconds: 3_600,
+      payerPublicKey: 'ignored', // Should be ignored
+      ceiling: 999_999, // Should be ignored (comes from vault)
+    }, 'payer-1', payerKeys.privateKey);
+    expect(response.status).toBe(201);
+    const body = await response.json() as { ceiling: number };
+    // Ceiling should come from vault funded amount (50_000_000), not the ignored body value
+    expect(body.ceiling).toBe(50_000_000);
   });
 });

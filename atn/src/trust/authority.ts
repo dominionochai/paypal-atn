@@ -359,6 +359,73 @@ export function reserve(
   }).immediate();
 }
 
+export function reserveForChannel(
+  db: Database,
+  vaultId: string,
+  amount: number,
+  ttlSeconds: number,
+  now?: number,
+  reservationRef?: string,
+): { reservationId: string; expiresAt: number; vaultExpiresAt: number } {
+  if (!isSafeMicroAmount(amount) || amount === 0) {
+    throw new RangeError('Reservation amount must be a positive safe integer in micro-dollars.');
+  }
+  if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) {
+    throw new RangeError('Reservation TTL must be a positive safe integer in seconds.');
+  }
+
+  const baseTime = now !== undefined ? now : Date.now();
+  const nowMs = baseTime > 1e11 ? baseTime : baseTime * 1000;
+  const reservationId = reservationRef ?? randomUUID();
+  const expiresAt = nowMs + ttlSeconds * 1000;
+  if (!Number.isSafeInteger(expiresAt)) {
+    throw new RangeError('Reservation expiry exceeds the safe integer range.');
+  }
+
+  return db.transaction(() => {
+    const vault = db.prepare('SELECT id, funded, reserved, committed, state, expires_at, delegation_id FROM vaults WHERE id = ?')
+      .get(vaultId) as VaultRow | undefined;
+    if (!vault) {
+      throw new RangeError('Vault not found.');
+    }
+    if (vault.state !== 'OPEN') {
+      throw new RangeError('Vault is not open.');
+    }
+    const vaultExpMs = Date.parse(vault.expires_at);
+    if (Number.isFinite(vaultExpMs) && vaultExpMs <= nowMs) {
+      throw new RangeError('Vault has expired.');
+    }
+    // Cap reservation expiry at vault expiry
+    const effectiveExpiresAt = Math.min(expiresAt, vaultExpMs);
+    if (!Number.isSafeInteger(effectiveExpiresAt)) {
+      throw new RangeError('Reservation expiry exceeds the safe integer range.');
+    }
+    if (vault.reserved + vault.committed + amount > vault.funded) {
+      throw new RangeError('Reservation amount exceeds vault funded ceiling.');
+    }
+    db.prepare('UPDATE vaults SET reserved = reserved + ? WHERE id = ?').run(amount, vault.id);
+
+    const insert = db.prepare(
+      `INSERT INTO budget_reservations
+         (delegation_id, transaction_id, amount, status, expires_at, reservation_ref)
+       VALUES (?, NULL, ?, 'RESERVED', ?, ?)`,
+    ).run(vault.delegation_id, amount, effectiveExpiresAt, reservationId);
+    const insertedId = insert.lastInsertRowid;
+    const entityId = typeof insertedId === 'bigint' ? Number(insertedId) : insertedId;
+    if (!Number.isSafeInteger(entityId)) {
+      throw new RangeError('Inserted reservation identifier exceeds the safe integer range.');
+    }
+    addAuditEvent(
+      db,
+      entityId,
+      'reservation.reserved',
+      { reservationId, amount, expiresAt: effectiveExpiresAt, delegationId: vault.delegation_id, vaultId, forChannel: true },
+      'channel',
+    );
+    return { reservationId, expiresAt: effectiveExpiresAt, vaultExpiresAt: vaultExpMs };
+  }).immediate();
+}
+
 export function commit(db: Database, reservationId: string, now?: number): void {
   const baseTime = now !== undefined ? now : Date.now();
   const nowMs = baseTime > 1e11 ? baseTime : baseTime * 1000;
@@ -421,8 +488,8 @@ export function release(db: Database, reservationId: string, now?: number): void
 
     const resRow = db.prepare('SELECT delegation_id, amount FROM budget_reservations WHERE id = ?').get(reservation.id) as { delegation_id: number; amount: number } | undefined;
     if (resRow) {
-      const vault = db.prepare('SELECT id FROM vaults WHERE delegation_id = ? AND state = \'OPEN\'').get(resRow.delegation_id) as { id: string } | undefined;
-      if (vault) {
+      const vault = db.prepare('SELECT id, reserved FROM vaults WHERE delegation_id = ? AND state = \'OPEN\'').get(resRow.delegation_id) as { id: string; reserved: number } | undefined;
+      if (vault && vault.reserved >= resRow.amount) {
         db.prepare('UPDATE vaults SET reserved = reserved - ? WHERE id = ?').run(resRow.amount, vault.id);
       }
     }
