@@ -436,19 +436,44 @@ describe("HTTP API with signed requests (N1+N2)", () => {
     expect(body.error).toBe('VAULT_REVOKED');
   });
 
-  it("ignores client-supplied payerPublicKey in channel creation", async () => {
-    // The new API doesn't accept payerPublicKey or ceiling in the body
+  it("accepts client-specified ceiling bounded by vault available balance", async () => {
+    // Client can specify a ceiling that is bounded by vault available balance
     const response = await signedFetch(baseUrl, 'POST', '/v1/channels', {
       payerAgentId: 'payer-1',
       payeeAgentId: 'payee-1',
       vaultId: vaultId,
       ttlSeconds: 3_600,
-      payerPublicKey: 'ignored', // Should be ignored
-      ceiling: 999_999, // Should be ignored (comes from vault)
+      ceiling: 999_999, // Within vault available balance (50_000_000)
     }, 'payer-1', payerKeys.privateKey);
     expect(response.status).toBe(201);
     const body = await response.json() as { ceiling: number };
-    // Ceiling should come from vault funded amount (50_000_000), not the ignored body value
-    expect(body.ceiling).toBe(50_000_000);
+    // Ceiling should be what client specified since it's within vault available balance
+    expect(body.ceiling).toBe(999_999);
+  });
+
+  it("rejects ceiling above vault available balance", async () => {
+    const response = await signedFetch(baseUrl, 'POST', '/v1/channels', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      vaultId: vaultId,
+      ttlSeconds: 3_600,
+      ceiling: 100_000_000, // Above vault available balance (50_000_000)
+    }, 'payer-1', payerKeys.privateKey);
+    expect(response.status).toBe(422);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('CEILING_EXCEEDS_VAULT');
+  });
+
+  it("rejects non-positive or non-integer ceiling", async () => {
+    const response = await signedFetch(baseUrl, 'POST', '/v1/channels', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      vaultId: vaultId,
+      ttlSeconds: 3_600,
+      ceiling: -1,
+    }, 'payer-1', payerKeys.privateKey);
+    expect(response.status).toBe(422);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('INVALID_CEILING');
   });
 });

@@ -418,19 +418,35 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
     if (method === 'POST' && segments.length === 2 && segments[0] === 'v1' && segments[1] === 'channels') {
       const parsed = parseJsonBody(body);
       if (!parsed) return bad('body must be a JSON object');
-      const { payerAgentId, payeeAgentId, vaultId, ttlSeconds } = parsed;
+      const { payerAgentId, payeeAgentId, vaultId, ttlSeconds, ceiling } = parsed;
       if (!nonEmptyString(payerAgentId)) return bad('payerAgentId must be a non-empty string');
       if (!nonEmptyString(payeeAgentId)) return bad('payeeAgentId must be a non-empty string');
       if (!nonEmptyString(vaultId)) return bad('vaultId must be a non-empty string');
       if (!positiveInt(ttlSeconds)) return bad('ttlSeconds must be a positive integer');
-      // ceiling comes from the vault's funded amount
+      
       const vault = getVault(db, vaultId);
       if (!vault) return json(404, { error: 'NOT_FOUND', detail: 'vault not found' });
       if (vault.state !== 'OPEN') return json(422, { error: 'VAULT_CLOSED', detail: 'vault is not open' });
       const vaultExpMs = Date.parse(vault.expires_at);
       if (Number.isFinite(vaultExpMs) && vaultExpMs <= Date.now()) return json(422, { error: 'VAULT_EXPIRED', detail: 'vault has expired' });
+      
+      // Determine channel ceiling: use provided ceiling or default to vault available balance
+      const vaultAvailable = vault.funded - vault.reserved - vault.committed;
+      let channelCeiling: number;
+      if (ceiling !== undefined) {
+        if (typeof ceiling !== 'number' || !Number.isSafeInteger(ceiling) || ceiling <= 0) {
+          return json(422, { error: 'INVALID_CEILING', detail: 'ceiling must be a positive safe integer' });
+        }
+        if (ceiling > vaultAvailable) {
+          return json(422, { error: 'CEILING_EXCEEDS_VAULT', detail: `ceiling exceeds vault available balance of ${vaultAvailable}` });
+        }
+        channelCeiling = ceiling;
+      } else {
+        channelCeiling = vaultAvailable;
+      }
+      
       try {
-        const channel = openChannel(db, { payerAgentId, payeeAgentId, vaultId, ceiling: vault.funded, ttlSeconds });
+        const channel = openChannel(db, { payerAgentId, payeeAgentId, vaultId, ceiling: channelCeiling, ttlSeconds });
         return json(201, { channelId: channel.id, ceiling: channel.ceiling, expiresAt: channel.expires_at, vaultId: channel.vault_id });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
