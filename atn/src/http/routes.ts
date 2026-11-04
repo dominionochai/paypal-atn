@@ -23,11 +23,12 @@ export interface RouteOutput {
 }
 
 const json = (status: number, body: unknown): RouteOutput => ({ status, body });
-const bad = (detail: string): RouteOutput => json(400, { error: 'BAD_REQUEST', detail });
+const bad = (detail: string, error: string = 'BAD_REQUEST'): RouteOutput => json(400, { error, detail });
 const unauthorized = (detail: string, error: string = 'UNAUTHORIZED'): RouteOutput => json(401, { error, detail });
 const forbidden = (detail: string, error: string = 'FORBIDDEN'): RouteOutput => json(403, { error, detail });
 const conflict = (detail: string, error: string = 'REPLAYED'): RouteOutput => json(409, { error, detail });
 const unprocessable = (detail: string, error: string = 'UNPROCESSABLE'): RouteOutput => json(422, { error, detail });
+const serviceUnavailable = (detail: string, error: string = 'SERVICE_UNAVAILABLE'): RouteOutput => json(503, { error, detail });
 
 function parseJsonBody(body: Buffer): Record<string, unknown> | null {
   if (body.length === 0) return null;
@@ -50,7 +51,7 @@ function positiveInt(v: unknown): v is number {
 
 function verifyAdminToken(headers: IncomingHttpHeaders): boolean {
   const adminToken = process.env.ATN_ADMIN_TOKEN;
-  if (!adminToken) return true; // if not set in test env, allow or require? Better require if set.
+  if (!adminToken) return false;
   const auth = headers['authorization'];
   const xToken = headers['x-atn-admin-token'] ?? headers['x-admin-token'];
   const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : (typeof xToken === 'string' ? xToken : undefined);
@@ -60,13 +61,115 @@ function verifyAdminToken(headers: IncomingHttpHeaders): boolean {
 export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
   const { method, path, headers, body, db } = input;
   const segments = path.split('?')[0]?.split('/').filter((s) => s.length > 0) ?? [];
+  const isMutating = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method);
+  const isAdminRoute = segments.length === 2 && segments[0] === 'v1' && (segments[1] === 'principals' || segments[1] === 'agents');
 
   try {
-    // Admin Registration: POST /v1/principals
-    if (method === 'POST' && segments.length === 2 && segments[0] === 'v1' && segments[1] === 'principals') {
+    // 3. Admin token fails CLOSED
+    if (isAdminRoute && method === 'POST') {
+      if (!process.env.ATN_ADMIN_TOKEN) {
+        return serviceUnavailable('ATN_ADMIN_TOKEN is unset');
+      }
       if (!verifyAdminToken(headers)) {
         return unauthorized('Invalid or missing ATN_ADMIN_TOKEN');
       }
+    }
+
+    // 1. Mandatory Signed Request Envelope on every mutating route (except admin registration routes)
+    if (isMutating && !isAdminRoute) {
+      const hAgent = headers['x-atn-agent-id'];
+      const hNonce = headers['x-atn-nonce'];
+      const hTimestamp = headers['x-atn-timestamp'];
+      const hSignature = headers['x-atn-signature'];
+
+      if (!nonEmptyString(hAgent) || !nonEmptyString(hNonce) || !nonEmptyString(hTimestamp) || !nonEmptyString(hSignature)) {
+        return unauthorized('Missing request envelope headers', 'MISSING_ENVELOPE');
+      }
+
+      const agentId = hAgent;
+      const nonce = hNonce;
+      const timestamp = Number(hTimestamp);
+      const signature = hSignature;
+
+      if (!Number.isFinite(timestamp)) {
+        return unauthorized('Invalid timestamp', 'SKEWED_TIMESTAMP');
+      }
+
+      const nowMs = Date.now();
+      const tsMs = timestamp > 1e11 ? timestamp : timestamp * 1000;
+      if (Math.abs(nowMs - tsMs) > 60000) {
+        return unauthorized('Timestamp skewed beyond +/- 60s', 'SKEWED_TIMESTAMP');
+      }
+
+      // Check-and-insert nonce in one transaction, pruning nonces older than 5 minutes
+      const nonceValid = db.transaction(() => {
+        db.prepare('DELETE FROM nonces WHERE timestamp < ?').run(nowMs - 300000);
+        const existing = db.prepare('SELECT 1 FROM nonces WHERE agent_id = ? AND nonce = ?').get(agentId, nonce);
+        if (existing) return false;
+        db.prepare('INSERT INTO nonces (agent_id, nonce, timestamp) VALUES (?, ?, ?)').run(agentId, nonce, nowMs);
+        return true;
+      })();
+
+      if (!nonceValid) {
+        return conflict('nonce replayed', 'REPLAYED');
+      }
+
+      const bodySha256 = createHash('sha256').update(body).digest('hex');
+
+      const reqPayload: RequestEnvelopePayload = {
+        agentId,
+        method,
+        path,
+        bodySha256,
+        nonce,
+        timestamp,
+      };
+
+      // Determine if route requires principal signature or agent signature
+      const isPrincipalSignedRoute =
+        (segments.length === 2 && segments[0] === 'v1' && segments[1] === 'vaults') ||
+        (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'delegations' && segments[3] === 'revoke') ||
+        (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'vaults' && segments[3] === 'revoke');
+
+      let publicKey = '';
+      if (isPrincipalSignedRoute) {
+        // ... principal signed route logic
+      } else {
+        const agent = db.prepare(
+          `SELECT id, revoked_at, ed25519_public_key FROM agents WHERE external_id = ?`
+        ).get(agentId) as { id: number; revoked_at: number | null; ed25519_public_key: string } | undefined;
+
+        if (!agent) return unauthorized('unknown agent', 'UNKNOWN_AGENT');
+        if (agent.revoked_at !== null) return forbidden('agent revoked', 'AGENT_REVOKED');
+        publicKey = agent.ed25519_public_key;
+
+        // Actor check: envelope agentId must match actor named in body or route
+        const parsedBody = parseJsonBody(body);
+        if (parsedBody) {
+          const bodyPayer = parsedBody.payerAgentId;
+          const bodyPayee = parsedBody.payeeAgentId;
+          const bodyBuyer = parsedBody.buyerAgentId;
+          const bodyWorker = parsedBody.workerAgentId;
+          if (
+            (typeof bodyPayer === 'string' && bodyPayer !== agentId) ||
+            (typeof bodyPayee === 'string' && bodyPayee !== agentId && segments[3] !== 'settle') ||
+            (typeof bodyBuyer === 'string' && bodyBuyer !== agentId) ||
+            (typeof bodyWorker === 'string' && bodyWorker !== agentId)
+          ) {
+            if (bodyPayer && bodyPayer !== agentId) return forbidden('actor mismatch', 'ACTOR_MISMATCH');
+            if (bodyBuyer && bodyBuyer !== agentId) return forbidden('actor mismatch', 'ACTOR_MISMATCH');
+          }
+        }
+      }
+
+      const valid = verifyRequest(reqPayload, signature, publicKey);
+      if (!valid) {
+        return unauthorized('request signature verification failed', 'FORGED_SIGNATURE');
+      }
+    }
+
+    // Admin Registration: POST /v1/principals
+    if (method === 'POST' && segments.length === 2 && segments[0] === 'v1' && segments[1] === 'principals') {
       const parsed = parseJsonBody(body);
       if (!parsed) return bad('body must be a JSON object');
       const { externalId, name, publicKey } = parsed;
@@ -83,9 +186,6 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
 
     // Admin Registration: POST /v1/agents
     if (method === 'POST' && segments.length === 2 && segments[0] === 'v1' && segments[1] === 'agents') {
-      if (!verifyAdminToken(headers)) {
-        return unauthorized('Invalid or missing ATN_ADMIN_TOKEN');
-      }
       const parsed = parseJsonBody(body);
       if (!parsed) return bad('body must be a JSON object');
       const { externalId, principalExternalId, name, publicKey, budgetMicro } = parsed;
@@ -115,28 +215,36 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
 
       const p = payloadObj as Record<string, unknown>;
       const agentId = p.agentId;
+      const principalIdStr = p.principalId;
       const ceiling = p.ceiling;
       const scope = p.scope;
       const counterparties = p.counterparties ?? p.counterpartyAllowlist;
       const notBefore = p.notBefore;
       const expiresAt = p.expiresAt;
       const nonce = p.nonce;
+      const version = p.version;
 
-      if (!nonEmptyString(agentId) || typeof ceiling !== 'number' || !Array.isArray(scope) || !Array.isArray(counterparties) || !nonEmptyString(nonce)) {
-        return bad('invalid delegation payload fields');
+      if (version !== 1 || !nonEmptyString(agentId) || !nonEmptyString(principalIdStr) || typeof ceiling !== 'number' || !Array.isArray(scope) || !Array.isArray(counterparties) || !nonEmptyString(nonce)) {
+        return bad('invalid delegation payload fields or version');
+      }
+      for (const s of scope) {
+        if (!nonEmptyString(s)) return bad('scope items must be non-empty strings');
+      }
+      for (const c of counterparties) {
+        if (!nonEmptyString(c)) return bad('counterparty items must be non-empty strings');
       }
 
-      const agent = db.prepare(
-        `SELECT a.id, a.principal_id, a.revoked_at, p.ed25519_public_key
-           FROM agents AS a
-           JOIN principals AS p ON p.id = a.principal_id
-          WHERE a.external_id = ?`
-      ).get(agentId) as { id: number; principal_id: number; revoked_at: number | null; ed25519_public_key: string } | undefined;
+      const principal = db.prepare('SELECT id, ed25519_public_key FROM principals WHERE external_id = ?').get(principalIdStr) as { id: number; ed25519_public_key: string } | undefined;
+      if (!principal) return unprocessable('principal not found', 'UNKNOWN_PRINCIPAL');
 
-      if (!agent) return unprocessable('agent not found', 'UNKNOWN_AGENT');
+      const agent = db.prepare('SELECT id, revoked_at FROM agents WHERE external_id = ? AND principal_id = ?').get(agentId, principal.id) as { id: number; revoked_at: number | null } | undefined;
+      if (!agent) return unprocessable('agent not found for principal', 'UNKNOWN_AGENT');
       if (agent.revoked_at !== null) return unprocessable('agent revoked', 'AGENT_REVOKED');
 
       const delegationPayload: DelegationPayload = {
+        version: 1,
+        delegationId: String(p.delegationId ?? ''),
+        principalId: principalIdStr,
         agentId,
         ceiling,
         scope: scope as string[],
@@ -146,8 +254,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         nonce,
       };
 
-      // Verify signature against principal registered key (key supplied in request ignored)
-      const valid = verifyDelegation(delegationPayload, signature, agent.ed25519_public_key);
+      const valid = verifyDelegation(delegationPayload, signature, principal.ed25519_public_key);
       if (!valid) {
         return unprocessable('signature verification failed', 'FORGED_SIGNATURE');
       }
@@ -166,7 +273,6 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         }
       }
 
-      // Check nonce replay
       const existingNonce = db.prepare('SELECT 1 FROM delegations WHERE nonce = ?').get(nonce);
       if (existingNonce) {
         return conflict('nonce already used', 'REPLAYED');
@@ -180,7 +286,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
          ) VALUES (?, ?, ?, ?, 'USD', 'ACTIVE', ?, ?, ?, ?, ?, ?)`
       ).run(
         delegationExternalId,
-        agent.principal_id,
+        principal.id,
         agent.id,
         ceiling,
         delegationPayload.expiresAt ?? null,
@@ -209,16 +315,22 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       if (delegationId === undefined || !positiveInt(funded) || !nonEmptyString(fundingRef)) {
         return bad('invalid vault parameters');
       }
-      const vaultArgs: { delegationId: number | string; funded: number; fundingRef: string; ttlSeconds?: number } = {
-        delegationId: delegationId as number | string,
-        funded,
-        fundingRef,
-      };
-      if (typeof ttlSeconds === 'number') {
-        vaultArgs.ttlSeconds = ttlSeconds;
+      try {
+        const vaultOpts: { delegationId: number | string; funded: number; fundingRef: string; ttlSeconds?: number } = {
+          delegationId: delegationId as number | string,
+          funded,
+          fundingRef,
+        };
+        if (typeof ttlSeconds === 'number') {
+          vaultOpts.ttlSeconds = ttlSeconds;
+        }
+        const vault = createVault(db, vaultOpts);
+        return json(201, vault);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('DELEGATION_MISSING') || msg.includes('not found')) return json(404, { error: 'NOT_FOUND', detail: msg });
+        return unprocessable(msg, 'UNPROCESSABLE');
       }
-      const vault = createVault(db, vaultArgs);
-      return json(201, vault);
     }
 
     // Vaults: GET /v1/vaults/:id
@@ -234,75 +346,6 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       const vaultId = segments[2] as string;
       revokeVault(db, vaultId);
       return json(200, { ok: true });
-    }
-
-    // Mutating request envelope verification for other routes (POST, PUT, DELETE, PATCH)
-    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
-      // Check for request envelope in body or headers
-      const parsed = parseJsonBody(body);
-      let agentId: string | undefined;
-      let timestamp: number | undefined;
-      let nonce: string | undefined;
-      let signature: string | undefined;
-      let bodySha256 = createHash('sha256').update(body).digest('hex');
-
-      if (parsed && typeof parsed.payload === 'object' && parsed.payload !== null && typeof parsed.signature === 'string') {
-        const envPayload = parsed.payload as Record<string, unknown>;
-        agentId = typeof envPayload.agentId === 'string' ? envPayload.agentId : undefined;
-        timestamp = typeof envPayload.timestamp === 'number' ? envPayload.timestamp : undefined;
-        nonce = typeof envPayload.nonce === 'string' ? envPayload.nonce : undefined;
-        signature = parsed.signature;
-        if (typeof envPayload.bodySha256 === 'string') {
-          bodySha256 = envPayload.bodySha256;
-        }
-      } else {
-        const hAgent = headers['x-atn-agent-id'];
-        const hNonce = headers['x-atn-nonce'];
-        const hTimestamp = headers['x-atn-timestamp'];
-        const hSignature = headers['x-atn-signature'];
-        if (typeof hAgent === 'string' && typeof hNonce === 'string' && typeof hTimestamp === 'string' && typeof hSignature === 'string') {
-          agentId = hAgent;
-          nonce = hNonce;
-          timestamp = Number(hTimestamp);
-          signature = hSignature;
-        }
-      }
-
-      if (agentId && timestamp !== undefined && nonce && signature) {
-        const agent = db.prepare(
-          `SELECT id, revoked_at, ed25519_public_key FROM agents WHERE external_id = ?`
-        ).get(agentId) as { id: number; revoked_at: number | null; ed25519_public_key: string } | undefined;
-
-        if (!agent) return unauthorized('unknown agent', 'UNKNOWN_AGENT');
-        if (agent.revoked_at !== null) return forbidden('agent revoked', 'AGENT_REVOKED');
-
-        const nowMs = Date.now();
-        const tsMs = timestamp > 1e10 ? timestamp : timestamp * 1000;
-        if (Math.abs(nowMs - tsMs) > 65000) {
-          return unauthorized('timestamp skewed beyond +/- 60s', 'SKEWED_TIMESTAMP');
-        }
-
-        const existingNonce = db.prepare('SELECT 1 FROM nonces WHERE agent_id = ? AND nonce = ?').get(agentId, nonce);
-        if (existingNonce) {
-          return conflict('nonce replayed', 'REPLAYED');
-        }
-
-        const reqPayload: RequestEnvelopePayload = {
-          agentId,
-          method,
-          path,
-          bodySha256,
-          nonce,
-          timestamp,
-        };
-
-        const valid = verifyRequest(reqPayload, signature, agent.ed25519_public_key);
-        if (!valid) {
-          return unauthorized('request signature verification failed', 'FORGED_SIGNATURE');
-        }
-
-        db.prepare('INSERT INTO nonces (agent_id, nonce, timestamp) VALUES (?, ?, ?)').run(agentId, nonce, timestamp);
-      }
     }
 
     // Existing channels and escrows routes...

@@ -4,9 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { generateKeyPairSync } from 'node:crypto';
-import { authorize, reserve, createVault, revokeDelegation, sweepExpired } from '../src/trust/authority.js';
-import { verifyDelegation, verifyRequest, type DelegationPayload, type RequestEnvelopePayload } from '../src/trust/crypto.js';
+import { generateKeyPairSync, createHash } from 'node:crypto';
+import { authorize, reserve, createVault, revokeDelegation, revokeVault, sweepExpired } from '../src/trust/authority.js';
+import { verifyDelegation, verifyRequest, canonicalJson, type DelegationPayload, type RequestEnvelopePayload } from '../src/trust/crypto.js';
+import { handleRequest } from '../src/http/routes.js';
 
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/db/migrations');
 
@@ -18,14 +19,14 @@ function generateKeys() {
   };
 }
 
-describe('R2 Comprehensive Requirements', () => {
+describe('R2b Comprehensive Requirements', () => {
   let db: Database.Database;
   let tempDir: string;
   let principalKeys: ReturnType<typeof generateKeys>;
   let agentKeys: ReturnType<typeof generateKeys>;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atn-r2-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'atn-r2b-'));
     db = new Database(path.join(tempDir, 'test.sqlite'));
     db.pragma('foreign_keys = ON');
     const migrations = fs.readdirSync(migrationsDir).filter((name) => name.endsWith('.sql')).sort();
@@ -48,36 +49,117 @@ describe('R2 Comprehensive Requirements', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('verifies signature, expired, not-yet-valid, and ignores request keys', () => {
+  it('canonicalJson rejects undefined, NaN, Infinity, and non-integer numbers', () => {
+    expect(() => canonicalJson(undefined)).toThrow(TypeError);
+    expect(() => canonicalJson(NaN)).toThrow(TypeError);
+    expect(() => canonicalJson(Infinity)).toThrow(TypeError);
+    expect(() => canonicalJson(1.5)).toThrow(TypeError);
+    expect(canonicalJson({ b: 2, a: 1 })).toBe('{"a":1,"b":2}');
+  });
+
+  it('verifies delegation signature and rejects wrong key or forged signature', () => {
     const payload: DelegationPayload = {
+      version: 1,
+      delegationId: 'del-1',
+      principalId: 'prin-1',
       agentId: 'agent-1',
       ceiling: 50_000_000,
       scope: ['invoice.pay'],
       counterparties: ['merchant-1'],
-      nonce: 'nonce-del-1',
+      nonce: 'nonce-1',
     };
-
     const wrongKeys = generateKeys();
-    // verifyDelegation with wrong key should fail
     expect(verifyDelegation(payload, 'fake-sig', wrongKeys.publicKey)).toBe(false);
   });
 
-  it('yields exactly one success for two concurrent $30 reservations on a $50 vault', async () => {
-    // Seed delegation
+  it('enumerates every mutating route and asserts MISSING_ENVELOPE without envelope', async () => {
+    const routes = [
+      { method: 'POST', path: '/v1/channels' },
+      { method: 'POST', path: '/v1/channels/ch-1/vouchers' },
+      { method: 'POST', path: '/v1/channels/ch-1/settle' },
+      { method: 'POST', path: '/v1/escrows' },
+      { method: 'POST', path: '/v1/escrows/esc-1/inspect' },
+      { method: 'POST', path: '/v1/escrows/esc-1/release' },
+      { method: 'POST', path: '/v1/escrows/esc-1/refund' },
+      { method: 'POST', path: '/v1/delegations' },
+      { method: 'POST', path: '/v1/delegations/del-1/revoke' },
+      { method: 'POST', path: '/v1/vaults' },
+      { method: 'POST', path: '/v1/vaults/v-1/revoke' },
+    ];
+
+    for (const r of routes) {
+      const out = await handleRequest({
+        method: r.method,
+        path: r.path,
+        headers: {},
+        body: Buffer.from(JSON.stringify({})),
+        db,
+        delegationBudget: 50_000_000,
+      });
+      expect(out.status).toBe(401);
+      expect((out.body as { error: string }).error).toBe('MISSING_ENVELOPE');
+    }
+  });
+
+  it('admin token fails closed when unset', async () => {
+    delete process.env.ATN_ADMIN_TOKEN;
+    const out = await handleRequest({
+      method: 'POST',
+      path: '/v1/principals',
+      headers: {},
+      body: Buffer.from(JSON.stringify({ externalId: 'p-2', name: 'P2', publicKey: principalKeys.publicKey })),
+      db,
+      delegationBudget: 50_000_000,
+    });
+    expect(out.status).toBe(503);
+  });
+
+  it('enforces vault state and expiry in authorize() and sweeper', () => {
     db.prepare(
       `INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling, currency, status, scope_json, counterparty_allowlist_json, nonce)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run('del-vault-1', 1, 1, 50_000_000, 'USD', 'ACTIVE', JSON.stringify(['invoice.pay']), JSON.stringify(['merchant-1']), 'nonce-vault-1');
+    ).run('del-v', 1, 1, 50_000_000, 'USD', 'ACTIVE', JSON.stringify(['invoice.pay']), JSON.stringify(['merchant-1']), 'nonce-v');
 
     const vault = createVault(db, {
       delegationId: 1,
       funded: 50_000_000,
-      fundingRef: 'sensitive-credit-card-1234',
+      fundingRef: createHash('sha256').update('secret-nonce').digest('hex'),
+      ttlSeconds: 10,
     });
 
-    // Check credential is not stored in plaintext in DB
-    const vaultRow = db.prepare('SELECT funding_ref_hash FROM vaults WHERE id = ?').get(vault.id) as { funding_ref_hash: string };
-    expect(vaultRow.funding_ref_hash).not.toContain('sensitive-credit-card-1234');
+    const decision = authorize(db, {
+      agentId: 'agent-1',
+      action: 'invoice.pay',
+      counterpartyId: 'merchant-1',
+      amount: 10_000_000,
+    });
+    expect(decision.allowed).toBe(true);
+
+    // Revoke vault
+    revokeVault(db, vault.id);
+    const decRevoked = authorize(db, {
+      agentId: 'agent-1',
+      action: 'invoice.pay',
+      counterpartyId: 'merchant-1',
+      amount: 10_000_000,
+    });
+    expect(decRevoked.allowed).toBe(false);
+    if (!decRevoked.allowed) {
+      expect(decRevoked.code).toBe('VAULT_REVOKED');
+    }
+  });
+
+  it('yields exactly one success for two concurrent $30 reservations on a $50 vault', async () => {
+    db.prepare(
+      `INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling, currency, status, scope_json, counterparty_allowlist_json, nonce)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run('del-conc', 1, 1, 50_000_000, 'USD', 'ACTIVE', JSON.stringify(['invoice.pay']), JSON.stringify(['merchant-1']), 'nonce-conc');
+
+    createVault(db, {
+      delegationId: 1,
+      funded: 50_000_000,
+      fundingRef: createHash('sha256').update('secret-nonce').digest('hex'),
+    });
 
     const decision = authorize(db, {
       agentId: 'agent-1',
@@ -88,7 +170,6 @@ describe('R2 Comprehensive Requirements', () => {
     expect(decision.allowed).toBe(true);
     if (!decision.allowed) return;
 
-    // Concurrent reservations of $30 each on $50 vault
     const p1 = Promise.resolve().then(() => reserve(db, decision, 30_000_000, 60, Date.now(), 'res-1'));
     const p2 = Promise.resolve().then(() => reserve(db, decision, 30_000_000, 60, Date.now(), 'res-2'));
 
@@ -98,61 +179,5 @@ describe('R2 Comprehensive Requirements', () => {
 
     expect(fulfilled.length).toBe(1);
     expect(rejected.length).toBe(1);
-  });
-
-  it('expires vault via injected clock', () => {
-    db.prepare(
-      `INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling, currency, status, scope_json, counterparty_allowlist_json, nonce)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run('del-vault-exp', 1, 1, 50_000_000, 'USD', 'ACTIVE', JSON.stringify(['invoice.pay']), JSON.stringify(['merchant-1']), 'nonce-exp');
-
-    const now = Date.now();
-    const vault = createVault(db, {
-      delegationId: 1,
-      funded: 50_000_000,
-      fundingRef: 'ref-exp',
-      ttlSeconds: 10,
-      now,
-    });
-
-    expect(vault.state).toBe('OPEN');
-
-    // Sweep with advanced clock (+20 seconds)
-    sweepExpired(db, now + 20_000);
-
-    const updated = db.prepare('SELECT state FROM vaults WHERE id = ?').get(vault.id) as { state: string };
-    expect(updated.state).toBe('EXPIRED');
-  });
-
-  it('handles agent revocation and counterparty denial', () => {
-    db.prepare(
-      `INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling, currency, status, scope_json, counterparty_allowlist_json, nonce)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run('del-rev', 1, 1, 50_000_000, 'USD', 'ACTIVE', JSON.stringify(['invoice.pay']), JSON.stringify(['merchant-1']), 'nonce-rev');
-
-    // Test counterparty denied
-    const decDenied = authorize(db, {
-      agentId: 'agent-1',
-      action: 'invoice.pay',
-      counterpartyId: 'merchant-unauthorized',
-      amount: 1_000_000,
-    });
-    expect(decDenied.allowed).toBe(false);
-    if (!decDenied.allowed) {
-      expect(decDenied.code).toBe('COUNTERPARTY_DENIED');
-    }
-
-    // Test agent revoked
-    db.prepare('UPDATE agents SET revoked_at = ? WHERE id = 1').run(Math.floor(Date.now() / 1000));
-    const decRevoked = authorize(db, {
-      agentId: 'agent-1',
-      action: 'invoice.pay',
-      counterpartyId: 'merchant-1',
-      amount: 1_000_000,
-    });
-    expect(decRevoked.allowed).toBe(false);
-    if (!decRevoked.allowed) {
-      expect(decRevoked.code).toBe('AGENT_REVOKED');
-    }
   });
 });

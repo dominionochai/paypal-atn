@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hardenDatabase } from '../src/db/hardening.js';
-import { authorize, commit, release, reserve, reserveAndCommit } from '../src/trust/authority.js';
+import { authorize, commit, release, reserve, reserveAndCommit, createVault } from '../src/trust/authority.js';
 
 type AgentSeed = {
   externalId?: string;
@@ -83,7 +83,19 @@ function seedDelegation(seed: DelegationSeed = {}): number {
     JSON.stringify(seed.counterpartyAllowlist ?? [counterparty]),
     seed.revokedAt ?? null,
   );
-  return Number(inserted.lastInsertRowid);
+  const delegationId = Number(inserted.lastInsertRowid);
+  // Only create vault for ACTIVE, non-expired, non-revoked delegations
+  const isActive = (seed.status ?? 'ACTIVE') === 'ACTIVE';
+  const isRevoked = seed.revokedAt !== null && seed.revokedAt !== undefined;
+  const isExpired = seed.expiresAt !== undefined && new Date(seed.expiresAt).getTime() <= Date.now();
+  if (isActive && !isRevoked && !isExpired) {
+    createVault(db, {
+      delegationId,
+      funded: seed.budgetCeiling ?? defaultBudgetCeiling,
+      fundingRef: '0'.repeat(64),
+    });
+  }
+  return delegationId;
 }
 
 function seedReservation(

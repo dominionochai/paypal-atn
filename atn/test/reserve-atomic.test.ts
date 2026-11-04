@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { authorize, reserve } from '../src/trust/authority.js';
+import { authorize, reserve, createVault } from '../src/trust/authority.js';
 import type { AuthorityDecision } from '../src/trust/authority.js';
 
 const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/db/migrations');
@@ -18,17 +18,24 @@ let db: Database.Database;
 let tempDir: string;
 
 function seed(): number {
-  const owner = db.prepare('INSERT INTO principals (external_id, name) VALUES (?, ?)').run('principal-1', 'principal-1');
-  const merchant = db.prepare('INSERT INTO principals (external_id, name) VALUES (?, ?)').run(COUNTERPARTY, COUNTERPARTY);
-  const agent = db.prepare('INSERT INTO agents (external_id, principal_id, name, revoked_at, budget_micro) VALUES (?, ?, ?, ?, ?)')
-    .run(AGENT, Number(owner.lastInsertRowid), AGENT, null, 100_000_000);
+  const owner = db.prepare('INSERT INTO principals (external_id, name, ed25519_public_key) VALUES (?, ?, ?)').run('principal-1', 'principal-1', 'pubkey');
+  const merchant = db.prepare('INSERT INTO principals (external_id, name, ed25519_public_key) VALUES (?, ?, ?)').run(COUNTERPARTY, COUNTERPARTY, 'pubkey');
+  const agent = db.prepare('INSERT INTO agents (external_id, principal_id, name, revoked_at, budget_micro, ed25519_public_key) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(AGENT, Number(owner.lastInsertRowid), AGENT, null, 100_000_000, 'pubkey');
   const delegation = db.prepare(
-    'INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling, currency, status, expires_at, scope_json, counterparty_allowlist_json, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO delegations (external_id, principal_id, agent_id, budget_ceiling, currency, status, expires_at, scope_json, counterparty_allowlist_json, revoked_at, nonce) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(
     'delegation-1', Number(merchant.lastInsertRowid), Number(agent.lastInsertRowid), CEILING, 'USD', 'ACTIVE',
     new Date(Date.now() + 86_400_000).toISOString(), JSON.stringify([ACTION]), JSON.stringify([COUNTERPARTY]), null,
+    'nonce-seed',
   );
-  return Number(delegation.lastInsertRowid);
+  const delId = Number(delegation.lastInsertRowid);
+  createVault(db, {
+    delegationId: delId,
+    funded: CEILING,
+    fundingRef: '0'.repeat(64),
+  });
+  return delId;
 }
 
 function allowed(amount: number): Extract<AuthorityDecision, { allowed: true }> {

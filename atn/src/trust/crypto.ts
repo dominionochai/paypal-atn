@@ -1,6 +1,9 @@
 import { sign, verify } from 'node:crypto';
 
 export interface DelegationPayload {
+  version: number;
+  delegationId: string;
+  principalId: string;
   agentId: string;
   ceiling: number;
   scope: readonly string[];
@@ -21,7 +24,18 @@ export interface RequestEnvelopePayload {
 }
 
 export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (value === undefined) {
+    throw new TypeError('canonicalJson cannot serialize undefined');
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || !Number.isInteger(value)) {
+      throw new TypeError('canonicalJson requires finite integers');
+    }
+    return JSON.stringify(value);
+  }
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
   if (Array.isArray(value)) {
     return `[${value.map((item: unknown) => canonicalJson(item)).join(',')}]`;
   }

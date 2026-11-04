@@ -1,4 +1,4 @@
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { Database } from '../db/db.js';
 
 interface AgentRow {
@@ -43,7 +43,10 @@ export type DenyCode =
   | 'NOT_YET_VALID'
   | 'OVER_CEILING'
   | 'REPLAYED'
-  | 'SKEWED_TIMESTAMP';
+  | 'SKEWED_TIMESTAMP'
+  | 'VAULT_MISSING'
+  | 'VAULT_EXPIRED'
+  | 'VAULT_REVOKED';
 
 export type AuthorityDecision =
   | { allowed: true; agentId: string; delegationId: string; remainingBudget: number }
@@ -175,6 +178,29 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
         return denied('CEILING_EXCEEDED', 'The requested amount is not a non-negative safe integer in micro-dollars.');
       }
 
+      // Vault enforcement: check vault existence, state, and expiry
+      const vault = db.prepare(
+        `SELECT id, funded, reserved, committed, state, expires_at
+           FROM vaults
+          WHERE delegation_id = ?
+          ORDER BY opened_at DESC
+          LIMIT 1`
+      ).get(delegation.id) as VaultRow & { expires_at: string } | undefined;
+
+      if (!vault) {
+        return denied('VAULT_MISSING', 'No vault exists for this delegation.');
+      }
+      if (vault.state === 'REVOKED') {
+        return denied('VAULT_REVOKED', 'The vault has been revoked.');
+      }
+      const vaultExpMs = Date.parse(vault.expires_at);
+      if (vault.state === 'EXPIRED' || (Number.isFinite(vaultExpMs) && vaultExpMs <= nowMilliseconds)) {
+        return denied('VAULT_EXPIRED', 'The vault has expired.');
+      }
+      if (vault.state !== 'OPEN') {
+        return denied('VAULT_MISSING', 'The vault is not open.');
+      }
+
       const staleReservations = db.prepare(
         `SELECT id
            FROM budget_reservations
@@ -217,8 +243,8 @@ export function authorize(db: Database, req: AuthorityRequest): AuthorityDecisio
       ).get(delegation.id, nowMilliseconds) as SumRow | undefined)?.total ?? 0;
 
       const delegationAvailable = delegation.budget_ceiling - delegationCommitted - delegationReserved;
-      if (req.amount > delegationAvailable) {
-        return denied('CEILING_EXCEEDED', 'The requested amount exceeds the remaining delegation ceiling.');
+      if (req.amount > delegationAvailable || req.amount > vault.funded - vault.committed - vault.reserved) {
+        return denied('CEILING_EXCEEDED', 'The requested amount exceeds the remaining delegation ceiling or vault balance.');
       }
 
       if (agent.budget_micro !== null) {
@@ -302,14 +328,15 @@ export function reserve(
       throw new RangeError('Reservation amount exceeds the remaining delegation ceiling.');
     }
 
-    const vault = db.prepare('SELECT id, funded, reserved, committed FROM vaults WHERE delegation_id = ? AND state = \'OPEN\'')
+    const vault = db.prepare('SELECT id, funded, reserved, committed, state FROM vaults WHERE delegation_id = ? AND state = \'OPEN\'')
       .get(delegationIdNum) as VaultRow | undefined;
-    if (vault !== undefined) {
-      if (vault.reserved + vault.committed + amount > vault.funded) {
-        throw new RangeError('Reservation amount exceeds vault funded ceiling.');
-      }
-      db.prepare('UPDATE vaults SET reserved = reserved + ? WHERE id = ?').run(amount, vault.id);
+    if (vault === undefined) {
+      throw new RangeError('No open vault found for this delegation.');
     }
+    if (vault.reserved + vault.committed + amount > vault.funded) {
+      throw new RangeError('Reservation amount exceeds vault funded ceiling.');
+    }
+    db.prepare('UPDATE vaults SET reserved = reserved + ? WHERE id = ?').run(amount, vault.id);
 
     const insert = db.prepare(
       `INSERT INTO budget_reservations
@@ -426,7 +453,7 @@ export function reserveAndCommit(
     try {
       release(db, reservation.reservationId, now);
     } catch {
-      // Preserve original commit failure after compensating release attempt.
+      // Preserve original commit failure.
     }
     throw error;
   }
@@ -437,13 +464,27 @@ export function createVault(
   db: Database,
   options: { delegationId: number | string; funded: number; fundingRef: string; ttlSeconds?: number; now?: number },
 ): { id: string; funded: number; expiresAt: string; state: string } {
-  const vaultId = randomUUID();
   const delegationIdNum = Number(options.delegationId);
-  const delegation = db.prepare('SELECT expires_at FROM delegations WHERE id = ?').get(delegationIdNum) as { expires_at: string | null } | undefined;
+  const delegation = db.prepare('SELECT budget_ceiling, status, expires_at, revoked_at FROM delegations WHERE id = ?').get(delegationIdNum) as DelegationRow | undefined;
   if (!delegation) {
-    throw new Error('Delegation not found for vault creation.');
+    throw new Error('DELEGATION_MISSING: Delegation not found for vault creation.');
+  }
+  if (delegation.status !== 'ACTIVE' || delegation.revoked_at !== null) {
+    throw new Error('DELEGATION_REVOKED: Delegation is not active or has been revoked.');
+  }
+  if (delegation.expires_at !== null) {
+    const expMs = Date.parse(delegation.expires_at);
+    const baseTime = options.now !== undefined ? options.now : Date.now();
+    const nowMs = baseTime > 1e11 ? baseTime : baseTime * 1000;
+    if (Number.isFinite(expMs) && expMs <= nowMs) {
+      throw new Error('DELEGATION_EXPIRED: Delegation has expired.');
+    }
+  }
+  if (!isSafeMicroAmount(options.funded) || options.funded > delegation.budget_ceiling) {
+    throw new Error('CEILING_EXCEEDED: Vault funded amount cannot exceed delegation budget ceiling.');
   }
 
+  const vaultId = randomUUID();
   const baseTime = options.now !== undefined ? options.now : Date.now();
   const nowMs = baseTime > 1e11 ? baseTime : baseTime * 1000;
   const openedAtIso = new Date(nowMs).toISOString();
@@ -460,7 +501,8 @@ export function createVault(
     expiryMs = Math.min(expiryMs, nowMs + options.ttlSeconds * 1000);
   }
   const expiresAtIso = new Date(expiryMs).toISOString();
-  const fundingRefHash = createHash('sha256').update(options.fundingRef).digest('hex');
+  // fundingRef supplied as 64-hex commitment (sha256(secret||nonce)), stored as-is
+  const fundingRefHash = options.fundingRef;
 
   db.prepare(
     `INSERT INTO vaults (id, delegation_id, funded, state, expires_at, opened_at, funding_ref_hash)
@@ -491,7 +533,11 @@ export function revokeVault(db: Database, vaultId: string, now?: number): void {
     const vault = getVault(db, vaultId);
     if (!vault) return;
     db.prepare("UPDATE vaults SET state = 'REVOKED' WHERE id = ?").run(vaultId);
-    revokeDelegation(db, vault.delegation_id, now);
+    // Release vault's open reservations without revoking the delegation
+    const reservedList = db.prepare("SELECT id FROM budget_reservations WHERE delegation_id = ? AND status = 'RESERVED'").all(vault.delegation_id) as Array<{ id: number }>;
+    for (const res of reservedList) {
+      release(db, String(res.id), now);
+    }
   })();
 }
 
@@ -502,6 +548,14 @@ export function sweepExpired(db: Database, now?: number): void {
 
   db.transaction(() => {
     db.prepare("UPDATE vaults SET state = 'EXPIRED' WHERE state = 'OPEN' AND expires_at <= ?").run(nowIso);
+    // Release vault open reservations for expired vaults
+    const expiredVaults = db.prepare("SELECT delegation_id FROM vaults WHERE state = 'EXPIRED'").all() as Array<{ delegation_id: number }>;
+    for (const v of expiredVaults) {
+      const reservedList = db.prepare("SELECT id FROM budget_reservations WHERE delegation_id = ? AND status = 'RESERVED'").all(v.delegation_id) as Array<{ id: number }>;
+      for (const res of reservedList) {
+        release(db, String(res.id), nowMs);
+      }
+    }
     const stale = db.prepare("SELECT id FROM budget_reservations WHERE status = 'RESERVED' AND expires_at <= ?").all(nowMs) as Array<{ id: number }>;
     for (const res of stale) {
       release(db, String(res.id), nowMs);
