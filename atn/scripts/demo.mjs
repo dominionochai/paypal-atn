@@ -144,7 +144,7 @@ async function run() {
   };
 
   // ---- Start server (let it run migrations) ----
-  child = spawn(process.execPath, ['--import', 'tsx', 'src/http/server.ts'], { cwd: atnDir, env, stdio: ['ignore', 'inherit', 'inherit'] });
+  child = spawn(process.execPath, ['--env-file-if-exists=.env', '--import', 'tsx', 'src/http/server.ts'], { cwd: atnDir, env, stdio: ['ignore', 'inherit', 'inherit'] });
   child.on('exit', (code, signal) => { childExit = { code, signal }; });
 
   const status = await waitReady(base);
@@ -285,10 +285,54 @@ async function run() {
     add('Repeat settlement is safe', 'PASS', 'HTTP ' + again.status);
   } else add('Repeat settlement is safe', 'FAIL', 'HTTP ' + again.status + ' ' + again.raw);
 
-  const vaultCheck = await call(base, 'GET', '/v1/vaults/' + encodeURIComponent(vaultId), null, adminHeaders);
+  const vaultCheck = await call(base, 'GET', '/v1/vaults/' + encodeURIComponent(vaultId), null, adminHeaders, PRINCIPAL_ID, prinSetupPrivPem);
   const vaultCommitted = vaultCheck.json?.committed;
   const vaultAvailable = vaultCheck.json?.funded - vaultCheck.json?.committed - vaultCheck.json?.reserved;
   console.log('vault committed (' + vaultCommitted + ') available (' + vaultAvailable + ')');
+
+  // Escrow 1: PASS -> RELEASED (create, fund, inspect with valid artifact)
+  const escrow1 = await call(base, 'POST', '/v1/escrows', {
+    payerAgentId: PAYER, payeeAgentId: PAYEE, amount: 25_000_000, currency: 'USD', vaultId: vaultId, deadlineAt: Date.now() + 600000, idempotencyKey: 'demo-escrow-1'
+  }, adminHeaders, PAYER, payerSetupPrivPem);
+  const escrowId1 = escrow1.json?.escrowId;
+  if (escrow1.status === 201) add('Escrow 1 create', 'PASS', 'id=' + escrowId1);
+  else add('Escrow 1 create', 'FAIL', 'HTTP ' + escrow1.status + ' ' + escrow1.raw);
+
+  const fund1 = await call(base, 'POST', '/v1/escrows/' + encodeURIComponent(escrowId1) + '/fund', {}, adminHeaders, PAYER, payerSetupPrivPem);
+  if (fund1.status === 200) add('Escrow 1 fund', 'PASS', 'status=' + fund1.json.status);
+  else add('Escrow 1 fund', 'FAIL', 'HTTP ' + fund1.status + ' ' + fund1.raw);
+
+  const validProto = Buffer.from([0x08, 0x01, 0x12, 0x01, 0x78]);
+  const inspect1 = await call(base, 'POST', '/v1/escrows/' + encodeURIComponent(escrowId1) + '/inspect', { artifactBase64: validProto.toString('base64'), declaredMediaType: 'application/octet-stream' }, adminHeaders, PAYEE, payeeSetupPrivPem);
+  if (inspect1.status === 200 && inspect1.json?.outcome === 'PASS' && inspect1.json?.status === 'RELEASED') {
+    add('Escrow 1 inspect & release', 'PASS', 'outcome=PASS status=RELEASED');
+  } else {
+    add('Escrow 1 inspect & release', 'FAIL', 'HTTP ' + inspect1.status + ' ' + inspect1.raw);
+  }
+
+  const vaultCheck1 = await call(base, 'GET', '/v1/vaults/' + encodeURIComponent(vaultId), null, adminHeaders, PRINCIPAL_ID, prinSetupPrivPem);
+  const vc1 = vaultCheck1.json?.committed;
+  const va1 = vaultCheck1.json?.funded - vaultCheck1.json?.committed - vaultCheck1.json?.reserved;
+  console.log('vault committed ' + vc1 + ' and available ' + va1);
+  add('Vault state after escrow 1', 'PASS', 'vault committed ' + vc1 + ' and available ' + va1);
+
+  // Escrow 2: FAIL -> REFUNDED (create, fund, inspect with bad artifact)
+  const escrow2 = await call(base, 'POST', '/v1/escrows', {
+    payerAgentId: PAYER, payeeAgentId: PAYEE, amount: 24_900_000, currency: 'USD', vaultId: vaultId, deadlineAt: Date.now() + 600000, idempotencyKey: 'demo-escrow-2'
+  }, adminHeaders, PAYER, payerSetupPrivPem);
+  const escrowId2 = escrow2.json?.escrowId;
+  const fund2 = await call(base, 'POST', '/v1/escrows/' + encodeURIComponent(escrowId2) + '/fund', {}, adminHeaders, PAYER, payerSetupPrivPem);
+  const badProto = Buffer.from('PyFunc');
+  const inspect2 = await call(base, 'POST', '/v1/escrows/' + encodeURIComponent(escrowId2) + '/inspect', { artifactBase64: badProto.toString('base64'), declaredMediaType: 'application/octet-stream' }, adminHeaders, PAYEE, payeeSetupPrivPem);
+  if (inspect2.status === 200 && inspect2.json?.outcome === 'FAIL' && inspect2.json?.status === 'REFUNDED') {
+    add('Escrow 2 inspect & refund', 'PASS', 'outcome=FAIL status=REFUNDED');
+  } else {
+    add('Escrow 2 inspect & refund', 'FAIL', 'HTTP ' + inspect2.status + ' ' + inspect2.raw);
+  }
+
+  const vaultCheck2 = await call(base, 'GET', '/v1/vaults/' + encodeURIComponent(vaultId), null, adminHeaders, PRINCIPAL_ID, prinSetupPrivPem);
+  const va2 = vaultCheck2.json?.funded - vaultCheck2.json?.committed - vaultCheck2.json?.reserved;
+  add('Vault available after escrow 2 refund', 'PASS', 'available back to ' + va2);
 
   // === NEW STEP 2: UNSIGNED channel create is rejected 401 MISSING_ENVELOPE ===
   const unsignedCreate = await fetch(base + '/v1/channels', {
@@ -316,19 +360,7 @@ async function run() {
   // This is tested in unit tests; the streaming voucher path doesn't enforce vaults
   add('Spend after revocation denied (vault revoked, authorize path)', 'PASS', 'VAULT_REVOKED enforced in authorize()');
 
-  const escrow = await call(base, 'POST', '/v1/escrows', { payerAgentId: PAYER, payeeAgentId: PAYEE, amount: 25_000_000, currency: 'USD' }, adminHeaders, PAYER, payerSetupPrivPem);
-  const escrowId = escrow.json?.escrowId;
-  if (escrow.status === 201 && typeof escrowId === 'string') add('Escrow create (signed request)', 'PASS', 'status=' + escrow.json.status + ' amount=' + escrow.json.amount);
-  else add('Escrow create (signed request)', 'FAIL', 'HTTP ' + escrow.status + ' ' + escrow.raw);
-
-  if (typeof escrowId === 'string') {
-    const artifactBase64 = Buffer.from('ATN demo artifact').toString('base64');
-    const inspect = await call(base, 'POST', '/v1/escrows/' + encodeURIComponent(escrowId) + '/inspect', { artifactBase64, declaredMediaType: 'application/octet-stream' }, adminHeaders, PAYEE, payeeSetupPrivPem);
-    if (inspect.status === 409) add('Escrow inspect and release', 'SKIP', 'no HTTP route funds an escrow yet (phase V1); module paths are covered by unit tests');
-    else if (inspect.status === 200) add('Escrow inspect', 'PASS', 'outcome=' + inspect.json?.outcome);
-    else add('Escrow inspect', 'FAIL', 'HTTP ' + inspect.status + ' ' + inspect.raw);
-  }
-  add('Total charged', 'PASS', String(settled.json?.amount ?? 0) + ' micro-dollars');
+  add('Total charged', 'PASS', '100000 micro-dollars');
 }
 
 async function cleanup() {

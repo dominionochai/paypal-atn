@@ -4,7 +4,7 @@ import type { Database } from '../db/db.js';
 import { openChannel, getChannel, acceptVoucher, settleChannel, closeChannel, AlreadySettledError, UnknownChannelError } from '../streaming/channel.js';
 import type { VoucherInput } from '../streaming/voucher.js';
 import { SimulatedAdapter } from '../payments/adapter.js';
-import { createEscrow, inspectEscrow, refundEscrow } from '../escrow/escrow.js';
+import { createEscrow, fundEscrow, inspectEscrow, refundEscrow } from '../escrow/escrow.js';
 import { verifyDelegation, verifyRequest, type DelegationPayload, type RequestEnvelopePayload } from '../trust/crypto.js';
 import { createVault, getVault, revokeDelegation, revokeVault } from '../trust/authority.js';
 
@@ -533,19 +533,29 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
     if (method === 'POST' && segments.length === 2 && segments[0] === 'v1' && segments[1] === 'escrows') {
       const parsed = parseJsonBody(body);
       if (!parsed) return bad('body must be a JSON object');
-      const { payerAgentId, payeeAgentId, amount, currency, artifactRef, idempotencyKey } = parsed;
+      const { payerAgentId, payeeAgentId, amount, currency, vaultId, deadlineAt, spec, artifactRef, idempotencyKey } = parsed;
       if (!nonEmptyString(payerAgentId)) return bad('payerAgentId must be a non-empty string');
       if (!nonEmptyString(payeeAgentId)) return bad('payeeAgentId must be a non-empty string');
       if (!positiveInt(amount)) return bad('amount must be a positive integer in micro-dollars');
-      const created = createEscrow(db, {
-        payerAgentId,
-        payeeAgentId,
-        amount,
-        currency: nonEmptyString(currency) ? currency : 'USD',
-        artifactRef: nonEmptyString(artifactRef) ? artifactRef : `escrow_${randomUUID()}`,
-        idempotencyKey: nonEmptyString(idempotencyKey) ? idempotencyKey : randomUUID(),
-      });
-      return json(201, { escrowId: created.id, amount: created.amount, status: created.status });
+      if (!nonEmptyString(vaultId)) return bad('vaultId must be a non-empty string');
+      if (typeof deadlineAt !== 'number') return bad('deadlineAt must be a timestamp number');
+      try {
+        const created = createEscrow(db, {
+          payerAgentId,
+          payeeAgentId,
+          amount,
+          currency: nonEmptyString(currency) ? currency : 'USD',
+          vaultId,
+          deadlineAt,
+          spec: typeof spec === 'string' ? spec : null,
+          artifactRef: nonEmptyString(artifactRef) ? artifactRef : `escrow_${randomUUID()}`,
+          idempotencyKey: nonEmptyString(idempotencyKey) ? idempotencyKey : randomUUID(),
+        });
+        return json(201, { escrowId: created.id, amount: created.amount, status: created.status });
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        return json(422, { error: 'ESCROW_CREATE_FAILED', detail });
+      }
     }
 
     if (segments.length >= 3 && segments[0] === 'v1' && segments[1] === 'escrows') {
@@ -564,6 +574,17 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         });
       }
 
+      if (method === 'POST' && segments.length === 4 && segments[3] === 'fund') {
+        try {
+          const funded = await fundEscrow(db, escrowId, new SimulatedAdapter());
+          return json(200, { id: funded.id, status: funded.status });
+        } catch (e) {
+          const detail = e instanceof Error ? e.message : String(e);
+          if (/unknown|not found/i.test(detail)) return json(404, { error: 'NOT_FOUND', detail });
+          return json(409, { error: 'FUNDING_FAILED', detail });
+        }
+      }
+
       if (method === 'POST' && segments.length === 4 && segments[3] === 'inspect') {
         const parsed = parseJsonBody(body);
         if (!parsed) return bad('body must be a JSON object');
@@ -573,8 +594,9 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         if (bytes.length === 0) return bad('artifactBase64 must be valid base64');
         const mediaType = nonEmptyString(declaredMediaType) ? declaredMediaType : 'application/octet-stream';
         try {
-          const result = inspectEscrow(db, escrowId, bytes, mediaType);
-          return json(200, { outcome: result.outcome, reasons: result.reasons });
+          const result = await inspectEscrow(db, escrowId, bytes, mediaType, new SimulatedAdapter());
+          const updated = db.prepare('SELECT status FROM escrows WHERE id = ?').get(escrowId) as { status: string };
+          return json(200, { outcome: result.outcome, reasons: result.reasons, status: updated.status });
         } catch (e) {
           const detail = e instanceof Error ? e.message : String(e);
           if (/unknown|not found/i.test(detail)) return json(404, { error: 'NOT_FOUND', detail });
@@ -582,19 +604,11 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         }
       }
 
-      if (method === 'POST' && segments.length === 4 && segments[3] === 'release') {
-        const row = db.prepare('SELECT status FROM escrows WHERE id = ?').get(escrowId) as { status: string } | undefined;
-        if (!row) return json(404, { error: 'NOT_FOUND', detail: 'unknown escrow' });
-        if (row.status === 'RELEASED') return json(200, { id: escrowId, status: 'RELEASED' });
-        if (row.status === 'CREATED' || row.status === 'FUNDED') {
-          return json(409, { error: 'NOT_RELEASABLE', detail: 'inspection has not passed' });
-        }
-        return json(409, { error: 'NOT_RELEASABLE', detail: `escrow is not releasable in status ${row.status}` });
-      }
+      // Remove the release endpoint
 
       if (method === 'POST' && segments.length === 4 && segments[3] === 'refund') {
         try {
-          const refunded = refundEscrow(db, escrowId);
+          const refunded = await refundEscrow(db, escrowId, new SimulatedAdapter());
           return json(200, { id: escrowId, status: refunded.status });
         } catch (e) {
           const detail = e instanceof Error ? e.message : String(e);

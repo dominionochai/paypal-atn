@@ -1,165 +1,292 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createDatabase } from '../src/db/db.js';
-import {
-  createRequestHash,
-  IdempotencyConflictError,
-  IdempotencyInFlightError,
-  PaymentOutcomeUnknownError,
-  SqliteIdempotencyStore,
-} from '../src/payments/idempotency.js';
-import { buildReconciliationReport, reconcilePayments } from '../src/payments/reconcile.js';
-import {
-  decimalToMicros,
-  microsToDecimal,
-  PAYPAL_PAYMENT_MAX_ATTEMPTS,
-  PayPalProviderError,
-  PayPalSandboxProvider,
-} from '../src/payments/providers/paypal.js';
-import { SimulatedPaymentProvider } from '../src/payments/providers/simulated.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SandboxAdapter, SimulatedAdapter, MissingCredentialsError, PaymentProviderError, NotRepresentableError, InvalidBaseUrlError } from '../src/payments/adapter.js';
 
-function jsonResponse(payload: unknown, status = 200): Response {
-  return new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } });
-}
-const credentials = { clientId: 'offline-client', clientSecret: 'offline-secret' };
-afterEach(() => vi.restoreAllMocks());
+describe('PayPal SandboxAdapter with stubbed fetch', () => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+  let adapter: SandboxAdapter;
 
-describe('PayPal sandbox provider', () => {
-  it('returns a typed OAuth fetch failure before sending a payment request', async () => {
-    let calls = 0;
-    const provider = new PayPalSandboxProvider(credentials, { fetcher: async () => { calls += 1; throw new Error('offline fake fetch failure'); } });
-    await expect(provider.createOrder({ amountMicros: 1, idempotencyKey: 'auth-failure' })).rejects.toMatchObject({
-      name: 'PayPalProviderError', retryable: true, definitive: true, outcomeUnknown: false,
-    });
-    expect(calls).toBe(1);
+  const mockToken = 'mock-access-token';
+  const mockOrderId = 'ORDER-123';
+  const mockAuthId = 'AUTH-456';
+  const mockCaptureId = 'CAP-789';
+  const mockPayoutBatchId = 'BATCH-001';
+
+  beforeEach(() => {
+    mockFetch = vi.fn();
+    adapter = new SandboxAdapter(mockFetch);
+    process.env.PAYPAL_CLIENT_ID = 'test-client-id';
+    process.env.PAYPAL_CLIENT_SECRET = 'test-client-secret';
+    process.env.PAYPAL_PAYEE_EMAIL = 'payee@example.com';
+    process.env.PAYPAL_BASE_URL = 'https://api-m.sandbox.paypal.com';
   });
 
-  it('does not retry definitive create-order 4xx responses', async () => {
-    let paymentCalls = 0;
-    const provider = new PayPalSandboxProvider(credentials, { fetcher: async (input) => {
-      if (String(input).endsWith('/v1/oauth2/token')) return jsonResponse({ access_token: 'token' });
-      paymentCalls += 1;
-      return jsonResponse({ name: 'INVALID_REQUEST', message: 'bad order' }, 422);
-    } });
-    await expect(provider.createOrder({ amountMicros: 1_999_999, idempotencyKey: 'definitive-4xx' })).rejects.toMatchObject({
-      name: 'PayPalProviderError', status: 422, retryable: false, definitive: true, outcomeUnknown: false,
-    });
-    expect(paymentCalls).toBe(1);
+  afterEach(() => {
+    vi.resetAllMocks();
+    delete process.env.PAYPAL_CLIENT_ID;
+    delete process.env.PAYPAL_CLIENT_SECRET;
+    delete process.env.PAYPAL_PAYEE_EMAIL;
+    delete process.env.PAYPAL_BASE_URL;
   });
 
-  it('retries HTTP 5xx exactly twice and then returns a typed unknown-outcome failure', async () => {
-    let paymentCalls = 0;
-    const requestIds: string[] = [];
-    const provider = new PayPalSandboxProvider(credentials, { fetcher: async (input, init) => {
-      if (String(input).endsWith('/v1/oauth2/token')) return jsonResponse({ access_token: 'token' });
-      paymentCalls += 1;
-      requestIds.push(new Headers(init?.headers).get('PayPal-Request-Id') ?? '');
-      return jsonResponse({ message: 'temporary sandbox failure' }, 503);
-    } });
-    await expect(provider.createOrder({ amountMicros: 1, idempotencyKey: 'retry-5xx' })).rejects.toBeInstanceOf(PayPalProviderError);
-    expect(PAYPAL_PAYMENT_MAX_ATTEMPTS).toBe(3);
-    expect(paymentCalls).toBe(3);
-    expect(new Set(requestIds)).toEqual(new Set(['retry-5xx']));
-  });
+  function setupTokenSuccess() {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ access_token: mockToken }), headers: new Map() });
+  }
 
-  it('parses successful capture id, status, amount and currency', async () => {
-    const provider = new PayPalSandboxProvider(credentials, { fetcher: async (input) => {
-      if (String(input).endsWith('/v1/oauth2/token')) return jsonResponse({ access_token: 'token' });
-      return jsonResponse({ purchase_units: [{ payments: { captures: [{
-        id: 'CAPTURE-1', status: 'COMPLETED', amount: { value: '50.000001', currency_code: 'USD' },
-      }] } }] });
-    } });
-    const capture = await provider.captureOrder({ orderId: 'ORDER-1', idempotencyKey: 'capture-key' });
-    expect(capture).toEqual({ orderId: 'ORDER-1', captureId: 'CAPTURE-1', status: 'COMPLETED', amountMicros: 50_000_001, currency: 'USD' });
-    expect(decimalToMicros('50.000001')).toBe(50_000_001);
-  });
+  function setupOrderCreateSuccess() {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ id: mockOrderId }), headers: new Map() });
+  }
 
-  it('converts exact micro-dollar amounts, including float-sensitive values', async () => {
-    expect([1, 999_999, 50_000_000, 3_333_333].map(microsToDecimal)).toEqual([
-      '0.000001', '0.999999', '50.00', '3.333333',
-    ]);
-    const sentValues: string[] = [];
-    const provider = new PayPalSandboxProvider(credentials, { fetcher: async (input, init) => {
-      if (String(input).endsWith('/v1/oauth2/token')) return jsonResponse({ access_token: 'token' });
-      const body = JSON.parse(String(init?.body)) as { purchase_units: { amount: { value: string } }[] };
-      sentValues.push(body.purchase_units[0].amount.value);
-      return jsonResponse({ id: `ORDER-${sentValues.length}`, status: 'CREATED' });
-    } });
-    for (const amountMicros of [1, 999_999, 50_000_000, 3_333_333]) {
-      await provider.createOrder({ amountMicros, idempotencyKey: `money-${amountMicros}` });
-    }
-    expect(sentValues).toEqual(['0.000001', '0.999999', '50.00', '3.333333']);
-  });
-});
+  function setupAuthorizeSuccess() {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ purchase_units: [{ payments: { authorizations: [{ id: mockAuthId }] } }] }), headers: new Map() });
+  }
 
-describe('simulated provider', () => {
-  it('labels itself SIMULATED and returns deterministic provider references', async () => {
-    const provider = new SimulatedPaymentProvider();
-    const input = { amountMicros: 1_999_999, currency: 'USD', idempotencyKey: 'sim-key' };
-    const one = await provider.createOrder(input);
-    const two = await provider.createOrder(input);
-    expect(provider.label).toBe('SIMULATED');
-    expect(one.orderId).toMatch(/^SIMULATED-ORDER-/);
-    expect(two.orderId).toBe(one.orderId);
-    const capture1 = await provider.captureOrder({ orderId: one.orderId, idempotencyKey: 'capture-key' });
-    const capture2 = await provider.captureOrder({ orderId: one.orderId, idempotencyKey: 'capture-key' });
-    expect(capture1.captureId).toMatch(/^SIMULATED-CAPTURE-/);
-    expect(capture2).toEqual(capture1);
-    expect(capture1.amountMicros).toBe(1_999_999);
-  });
-});
+  function setupCaptureSuccess() {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ id: mockCaptureId }), headers: new Map() });
+  }
 
-describe('SQLite idempotency store', () => {
-  it('replays the stored result once, conflicts on changed input, and blocks in-flight/unknown retries', async () => {
-    const db = createDatabase(':memory:');
-    try {
-      const store = new SqliteIdempotencyStore(db);
-      const request = { amountMicros: 1_999_999, currency: 'USD' };
-      const hash = createRequestHash(request);
-      let providerCalls = 0;
-      const first = await store.execute('same-key', hash, async () => {
-        providerCalls += 1;
-        return { orderId: 'ORDER-STORED', status: 'CREATED' };
+  function setupVoidSuccess() {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'VOIDED' }), headers: new Map() });
+  }
+
+  function setupPayoutSuccess() {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ batch_header: { payout_batch_id: mockPayoutBatchId } }), headers: new Map() });
+  }
+
+  function setupRefundSuccess() {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'REFUNDED' }), headers: new Map() });
+  }
+
+  function setupTokenFailure(status: number) {
+    mockFetch.mockResolvedValueOnce({ ok: false, status, text: async () => 'invalid_client', headers: new Map() });
+  }
+
+  describe('authorize', () => {
+    it('creates AUTHORIZE order and authorizes it', async () => {
+      setupTokenSuccess();
+      setupOrderCreateSuccess();
+      setupAuthorizeSuccess();
+
+      const result = await adapter.authorize({
+        amount: 100000,
+        currency: 'USD',
+        idempotencyKey: 'test-auth-1',
+        escrowId: 'escrow-1',
       });
-      const replay = await store.execute('same-key', hash, async () => {
-        providerCalls += 1;
-        return { orderId: 'SHOULD-NOT-RUN', status: 'CREATED' };
+
+      expect(result.ref).toBe(mockAuthId);
+      expect(result.mode).toBe('SANDBOX');
+      expect(mockFetch).toHaveBeenCalledTimes(3); // token + order + authorize
+    });
+
+    it('throws NotRepresentableError for non-cent amount', async () => {
+      await expect(adapter.authorize({ amount: 12345, currency: 'USD', idempotencyKey: 'k', escrowId: 'e' }))
+        .rejects.toBeInstanceOf(NotRepresentableError);
+    });
+
+    it('throws MissingCredentialsError when client id missing', async () => {
+      delete process.env.PAYPAL_CLIENT_ID;
+      await expect(adapter.authorize({ amount: 100000, currency: 'USD', idempotencyKey: 'k', escrowId: 'e' }))
+        .rejects.toBeInstanceOf(MissingCredentialsError);
+    });
+
+    it('throws InvalidBaseUrlError for non-sandbox URL', async () => {
+      process.env.PAYPAL_BASE_URL = 'https://api-m.paypal.com';
+      await expect(adapter.authorize({ amount: 100000, currency: 'USD', idempotencyKey: 'k', escrowId: 'e' }))
+        .rejects.toBeInstanceOf(InvalidBaseUrlError);
+    });
+
+    it('retries on 5xx then succeeds', async () => {
+      setupTokenSuccess();
+      setupOrderCreateSuccess();
+      let callCount = 0;
+      mockFetch
+        .mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'server error', headers: new Map() })
+        .mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'server error', headers: new Map() })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ purchase_units: [{ payments: { authorizations: [{ id: mockAuthId }] } }] }), headers: new Map() });
+
+      const result = await adapter.authorize({ amount: 100000, currency: 'USD', idempotencyKey: 'retry-test', escrowId: 'e' });
+      expect(result.ref).toBe(mockAuthId);
+      // token + order + 3 authorize attempts = 5 calls
+      expect(mockFetch).toHaveBeenCalledTimes(5);
+    });
+
+    it('does not retry on 4xx', async () => {
+      setupTokenSuccess();
+      setupOrderCreateSuccess();
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'bad request', headers: new Map() });
+
+      await expect(adapter.authorize({ amount: 100000, currency: 'USD', idempotencyKey: 'k', escrowId: 'e' }))
+        .rejects.toBeInstanceOf(PaymentProviderError);
+    });
+
+    it('throws PaymentProviderError with 401 for invalid_client', async () => {
+      setupTokenFailure(401);
+      await expect(adapter.authorize({ amount: 100000, currency: 'USD', idempotencyKey: 'k', escrowId: 'e' }))
+        .rejects.toThrow('invalid_client');
+    });
+  });
+
+  describe('capture', () => {
+    it('captures an authorization', async () => {
+      setupTokenSuccess();
+      setupCaptureSuccess();
+
+      const result = await adapter.capture({
+        authRef: mockAuthId,
+        amount: 100000,
+        idempotencyKey: 'test-cap-1',
       });
-      expect(replay).toEqual(first);
-      expect(providerCalls).toBe(1);
-      expect(() => store.claim('same-key', createRequestHash({ ...request, amountMicros: 2 }))).toThrow(IdempotencyConflictError);
 
-      const inFlightHash = createRequestHash({ operation: 'capture' });
-      expect(store.claim('in-flight-key', inFlightHash)).toEqual({ kind: 'acquired' });
-      await expect(store.execute('in-flight-key', inFlightHash, async () => 'should not run')).rejects.toBeInstanceOf(IdempotencyInFlightError);
+      expect(result.ref).toBe(mockCaptureId);
+      expect(result.mode).toBe('SANDBOX');
+    });
 
-      const unknownHash = createRequestHash({ operation: 'unknown-capture' });
-      await expect(store.execute('unknown-key', unknownHash, async () => { throw new Error('connection lost'); }))
-        .rejects.toBeInstanceOf(PaymentOutcomeUnknownError);
-      expect(store.get('unknown-key')?.status).toBe('UNKNOWN');
-      await expect(store.execute('unknown-key', unknownHash, async () => 'unsafe retry'))
-        .rejects.toBeInstanceOf(PaymentOutcomeUnknownError);
-    } finally {
-      db.close();
-    }
+    it('sends amount in request body as decimal string', async () => {
+      setupTokenSuccess();
+      setupCaptureSuccess();
+
+      await adapter.capture({ authRef: mockAuthId, amount: 50000, idempotencyKey: 'k' });
+
+      const capCall = mockFetch.mock.calls.find(c => c[0]?.includes('/v2/payments/authorizations/'));
+      expect(capCall).toBeDefined();
+      const body = JSON.parse(capCall![1]?.body as string);
+      // 50000 micro-dollars = $0.05
+      expect(body.amount.value).toBe('0.05');
+    });
+  });
+
+  describe('voidAuthorization', () => {
+    it('voids an authorization', async () => {
+      setupTokenSuccess();
+      setupVoidSuccess();
+
+      await adapter.voidAuthorization({ authRef: mockAuthId, idempotencyKey: 'test-void-1' });
+      expect(mockFetch).toHaveBeenCalledTimes(2); // token + void
+    });
+  });
+
+  describe('payout', () => {
+    it('creates a payout batch', async () => {
+      setupTokenSuccess();
+      setupPayoutSuccess();
+
+      const result = await adapter.payout({
+        amount: 100000,
+        currency: 'USD',
+        payeeRef: 'payee-1',
+        idempotencyKey: 'test-payout-1',
+      });
+
+      expect(result.ref).toBe(mockPayoutBatchId);
+      expect(result.mode).toBe('SANDBOX');
+    });
+
+    it('uses PAYPAL_PAYEE_EMAIL from env', async () => {
+      setupTokenSuccess();
+      setupPayoutSuccess();
+
+      await adapter.payout({ amount: 100000, currency: 'USD', payeeRef: 'p', idempotencyKey: 'k' });
+
+      const payoutCall = mockFetch.mock.calls.find(c => c[0]?.includes('/v1/payments/payouts'));
+      expect(payoutCall).toBeDefined();
+      const body = JSON.parse(payoutCall![1]?.body as string);
+      expect(body.items[0].receiver).toBe('payee@example.com');
+    });
+
+    it('throws MissingCredentialsError if PAYPAL_PAYEE_EMAIL missing', async () => {
+      delete process.env.PAYPAL_PAYEE_EMAIL;
+      setupTokenSuccess();
+      // The payout method checks for PAYPAL_PAYEE_EMAIL before making the token request
+      await expect(adapter.payout({ amount: 100000, currency: 'USD', payeeRef: 'p', idempotencyKey: 'k' }))
+        .rejects.toBeInstanceOf(MissingCredentialsError);
+    });
+  });
+
+  describe('refund', () => {
+    it('refunds a capture', async () => {
+      setupTokenSuccess();
+      setupRefundSuccess();
+
+      await adapter.refund({ captureRef: mockCaptureId, amount: 100000, idempotencyKey: 'test-refund-1' });
+      expect(mockFetch).toHaveBeenCalledTimes(2); // token + refund
+    });
+  });
+
+  describe('charge (legacy)', () => {
+    it('creates CAPTURE order and captures it', async () => {
+      setupTokenSuccess();
+      setupOrderCreateSuccess();
+      // charge captures the order, so we need a capture response with purchase_units structure
+      mockFetch.mockResolvedValueOnce({ 
+        ok: true, 
+        json: async () => ({ purchase_units: [{ payments: { captures: [{ id: mockCaptureId }] } }] }), 
+        headers: new Map() 
+      });
+
+      const result = await adapter.charge({
+        amount: 100000,
+        currency: 'USD',
+        idempotencyKey: 'test-charge-1',
+        channelId: 'channel-1',
+      });
+
+      expect(result.ref).toBe(mockCaptureId);
+      expect(result.mode).toBe('SANDBOX');
+    });
+  });
+
+  describe('secrets redaction', () => {
+    it('does not log client secret in error messages', async () => {
+      setupTokenFailure(401);
+      try {
+        await adapter.authorize({ amount: 100000, currency: 'USD', idempotencyKey: 'k', escrowId: 'e' });
+      } catch (e) {
+        const err = e as Error;
+        expect(err.message).not.toContain('test-client-secret');
+      }
+    });
   });
 });
 
-describe('payment reconciliation', () => {
-  const p = (reference: string, amountMicros = 1_000_000, status = 'COMPLETED'): {
-    reference: string; amountMicros: number; currency: string; status: string;
-  } => ({ reference, amountMicros, currency: 'USD', status });
+describe('SimulatedAdapter', () => {
+  let adapter: SimulatedAdapter;
 
-  it('reports matched, local-only, remote-only, amount mismatch and status mismatch records', async () => {
-    const local = [p('matched'), p('local-only'), p('amount'), p('status')];
-    const remote = [p('matched'), p('remote-only'), p('amount', 1_000_001), p('status', 1_000_000, 'PENDING')];
-    let fetchCalls = 0;
-    const report = await reconcilePayments(local, async () => { fetchCalls += 1; return remote; });
-    expect(fetchCalls).toBe(1);
-    expect(report.matched.map((item) => item.reference)).toEqual(['matched']);
-    expect(report.local_only.map((item) => item.reference)).toEqual(['local-only']);
-    expect(report.remote_only.map((item) => item.reference)).toEqual(['remote-only']);
-    expect(report.amount_mismatch.map((item) => item.reference)).toEqual(['amount']);
-    expect(report.status_mismatch.map((item) => item.reference)).toEqual(['status']);
-    expect(buildReconciliationReport(local, remote)).toEqual(report);
+  beforeEach(() => {
+    adapter = new SimulatedAdapter();
+  });
+
+  it('charge increments chargeCalls', async () => {
+    await adapter.charge({ amount: 100, currency: 'USD', idempotencyKey: 'k', channelId: 'c' });
+    expect(adapter.chargeCalls).toBe(1);
+  });
+
+  it('authorize increments authorizeCalls', async () => {
+    await adapter.authorize({ amount: 100000, currency: 'USD', idempotencyKey: 'k', escrowId: 'e' });
+    expect(adapter.authorizeCalls).toBe(1);
+  });
+
+  it('capture increments captureCalls', async () => {
+    await adapter.capture({ authRef: 'a', amount: 100000, idempotencyKey: 'k' });
+    expect(adapter.captureCalls).toBe(1);
+  });
+
+  it('voidAuthorization increments voidCalls', async () => {
+    await adapter.voidAuthorization({ authRef: 'a', idempotencyKey: 'k' });
+    expect(adapter.voidCalls).toBe(1);
+  });
+
+  it('payout increments payoutCalls', async () => {
+    await adapter.payout({ amount: 100000, currency: 'USD', payeeRef: 'p', idempotencyKey: 'k' });
+    expect(adapter.payoutCalls).toBe(1);
+  });
+
+  it('refund increments refundCalls', async () => {
+    await adapter.refund({ captureRef: 'c', amount: 100000, idempotencyKey: 'k' });
+    expect(adapter.refundCalls).toBe(1);
+  });
+
+  it('throws NotRepresentableError for non-cent amounts', async () => {
+    await expect(adapter.authorize({ amount: 12345, currency: 'USD', idempotencyKey: 'k', escrowId: 'e' }))
+      .rejects.toBeInstanceOf(NotRepresentableError);
   });
 });

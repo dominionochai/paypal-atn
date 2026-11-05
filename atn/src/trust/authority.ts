@@ -629,3 +629,25 @@ export function sweepExpired(db: Database, now?: number): void {
     }
   })();
 }
+
+export function updateMerchantTrust(db: Database, agentId: string, delta: number, reason: string, escrowId?: string | null): number {
+  return db.transaction(() => {
+    const row = db.prepare('SELECT score FROM merchant_trust WHERE agent_id = ?').get(agentId) as { score: number } | undefined;
+    const currentScore = row ? row.score : 500;
+    const newScore = Math.max(0, Math.min(1000, currentScore + delta));
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO merchant_trust (agent_id, score, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(agent_id) DO UPDATE SET score = excluded.score, updated_at = excluded.updated_at
+    `).run(agentId, newScore, now);
+
+    db.prepare(`
+      INSERT INTO trust_events (agent_id, delta, reason, escrow_id, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(agentId, delta, reason, escrowId ?? null, now);
+
+    addAuditEvent(db, 0, 'merchant_trust.updated', { agentId, score: newScore, delta, reason, escrowId: escrowId ?? null }, 'system');
+    return newScore;
+  })();
+}

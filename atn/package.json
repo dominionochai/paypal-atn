@@ -5,16 +5,17 @@
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=20"
+    "node": ">=22.9"
   },
   "scripts": {
-    "dev": "tsx watch src/http/server.ts",
+    "dev": "tsx --env-file-if-exists=.env watch src/http/server.ts",
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "stream:server": "tsx src/streaming/server.ts",
-    "reconcile": "tsx src/payments/reconcile-cli.ts",
-    "serve": "tsx src/http/server.ts"
+    "stream:server": "tsx --env-file-if-exists=.env src/streaming/server.ts",
+    "reconcile": "tsx --env-file-if-exists=.env src/payments/reconcile-cli.ts",
+    "serve": "tsx --env-file-if-exists=.env src/http/server.ts",
+    "paypal:smoke": "node --env-file-if-exists=.env scripts/paypal-smoke.mjs"
   },
   "dependencies": {
     "better-sqlite3": "12.11.1",
