@@ -20,7 +20,7 @@ function checkEnv() {
   }
 }
 
-function printTable(rows: Array<{ label: string; value: string }>) {
+function printTable(rows) {
   const maxLabel = Math.max(...rows.map(r => r.label.length));
   console.log('+' + '-'.repeat(maxLabel + 2) + '+----------------------+');
   for (const r of rows) {
@@ -36,11 +36,11 @@ async function runSmoke() {
 
   console.log('\n=== PayPal Sandbox Smoke Test ===\n');
 
-  // 1. Token request (implicit in first call)
+  // 1. Token request - fetch token directly
   console.log('1. Obtaining access token...');
   try {
-    // This will trigger token fetch internally
-    await adapter.authorize({ amount: 10000, currency: 'USD', idempotencyKey: 'smoke-token-test', escrowId: 'token-test' });
+    // Test token fetch directly (not through authorize())
+    const token = await adapter.getTokenForTest();
     console.log('   Token obtained successfully');
   } catch (e) {
     if (e instanceof PaymentProviderError && e.status === 401) {
@@ -52,11 +52,41 @@ async function runSmoke() {
 
   // 2. Create AUTHORIZE order
   console.log('\n2. Creating AUTHORIZE order for $0.10...');
-  const authResult = await adapter.authorize({
+  const orderResult = await adapter.createAuthorizeOrder({
     amount: 100000, // $0.10 in micro-dollars
     currency: 'USD',
     idempotencyKey: 'smoke-auth-1',
-    escrowId: 'smoke-escrow-1',
+  });
+  console.log('   Order ID:', orderResult.orderId);
+  console.log('   Approve URL:', orderResult.approveUrl);
+  printTable([
+    { label: 'Order ID', value: orderResult.orderId },
+    { label: 'Approve URL', value: orderResult.approveUrl },
+    { label: 'Mode', value: orderResult.mode },
+  ]);
+
+  // 3. Wait for buyer approval (in sandbox, we simulate by waiting for Enter)
+  console.log('\n3. Waiting for buyer approval...');
+  console.log('   In sandbox, the buyer would approve at:', orderResult.approveUrl);
+  
+  if (!process.stdin.isTTY) {
+    console.error('   stdin is not a TTY - aborting (no auto-continue)');
+    process.exit(1);
+  }
+  
+  console.log('   Press Enter after approval (no auto-continue)...');
+  
+  await new Promise((resolve) => {
+    process.stdin.once('data', () => {
+      resolve();
+    });
+  });
+
+  // 4. Authorize the order
+  console.log('\n4. Authorizing the order...');
+  const authResult = await adapter.authorizeOrder({
+    orderId: orderResult.orderId,
+    idempotencyKey: 'smoke-auth-confirm-1',
   });
   console.log('   Authorization ID:', authResult.ref);
   printTable([
@@ -64,24 +94,8 @@ async function runSmoke() {
     { label: 'Mode', value: authResult.mode },
   ]);
 
-  // 3. Wait for buyer approval (in sandbox, we simulate by waiting for Enter)
-  console.log('\n3. Waiting for buyer approval...');
-  console.log('   In sandbox, the buyer would approve at: https://www.sandbox.paypal.com/checkoutnow?token=' + authResult.ref);
-  console.log('   Press Enter after approval (or wait 30s for auto-continue)...');
-  
-  await new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => {
-      console.log('\n   Timeout - continuing without explicit approval');
-      resolve();
-    }, 30000);
-    process.stdin.once('data', () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-  });
-
-  // 4. Capture $0.10
-  console.log('\n4. Capturing $0.10...');
+  // 5. Capture $0.10
+  console.log('\n5. Capturing $0.10...');
   const captureResult = await adapter.capture({
     authRef: authResult.ref,
     amount: 100000,
@@ -93,8 +107,8 @@ async function runSmoke() {
     { label: 'Mode', value: captureResult.mode },
   ]);
 
-  // 5. Refund the capture
-  console.log('\n5. Refunding the capture...');
+  // 6. Refund the capture
+  console.log('\n6. Refunding the capture...');
   await adapter.refund({
     captureRef: captureResult.ref,
     amount: 100000,
@@ -103,17 +117,39 @@ async function runSmoke() {
   console.log('   Refund successful');
   printTable([{ label: 'Status', value: 'REFUNDED' }]);
 
-  // 6. Second order: authorize then void
-  console.log('\n6. Creating second AUTHORIZE order for $0.10...');
-  const authResult2 = await adapter.authorize({
+  // 7. Second order: authorize then void
+  console.log('\n7. Creating second AUTHORIZE order for $0.10...');
+  const orderResult2 = await adapter.createAuthorizeOrder({
     amount: 100000,
     currency: 'USD',
     idempotencyKey: 'smoke-auth-2',
-    escrowId: 'smoke-escrow-2',
+  });
+  console.log('   Order ID:', orderResult2.orderId);
+  console.log('   Approve URL:', orderResult2.approveUrl);
+
+  console.log('\n8. Waiting for buyer approval...');
+  console.log('   In sandbox, the buyer would approve at:', orderResult2.approveUrl);
+  
+  if (!process.stdin.isTTY) {
+    console.error('   stdin is not a TTY - aborting');
+    process.exit(1);
+  }
+  
+  console.log('   Press Enter after approval...');
+  await new Promise((resolve) => {
+    process.stdin.once('data', () => {
+      resolve();
+    });
+  });
+
+  console.log('\n9. Authorizing the second order...');
+  const authResult2 = await adapter.authorizeOrder({
+    orderId: orderResult2.orderId,
+    idempotencyKey: 'smoke-auth-confirm-2',
   });
   console.log('   Authorization ID:', authResult2.ref);
 
-  console.log('\n7. Voiding the authorization...');
+  console.log('\n10. Voiding the authorization...');
   await adapter.voidAuthorization({
     authRef: authResult2.ref,
     idempotencyKey: 'smoke-void-1',
@@ -121,8 +157,8 @@ async function runSmoke() {
   console.log('   Void successful');
   printTable([{ label: 'Status', value: 'VOIDED' }]);
 
-  // 8. Payout to payee
-  console.log('\n8. Creating $0.10 payout to payee...');
+  // 11. Payout to payee
+  console.log('\n11. Creating $0.10 payout to payee...');
   const payoutResult = await adapter.payout({
     amount: 100000,
     currency: 'USD',

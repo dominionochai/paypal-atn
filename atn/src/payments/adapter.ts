@@ -10,9 +10,16 @@ export interface PayoutRequest { amount: number; currency: string; payeeRef: str
 export interface PayoutResult { ref: string; mode: PaymentMode; }
 export interface RefundRequest { captureRef: string; amount: number; idempotencyKey: string; }
 
+export interface CreateAuthorizeOrderRequest { amount: number; currency: string; idempotencyKey: string; }
+export interface CreateAuthorizeOrderResult { orderId: string; approveUrl: string; mode: PaymentMode; }
+export interface AuthorizeOrderRequest { orderId: string; idempotencyKey: string; }
+export interface AuthorizeOrderResult { ref: string; mode: PaymentMode; }
+
 export interface PaymentAdapter {
   charge(req: ChargeRequest): Promise<ChargeResult>;
   authorize(req: AuthorizeRequest): Promise<AuthorizeResult>;
+  createAuthorizeOrder(req: CreateAuthorizeOrderRequest): Promise<CreateAuthorizeOrderResult>;
+  authorizeOrder(req: AuthorizeOrderRequest): Promise<AuthorizeOrderResult>;
   capture(req: CaptureRequest): Promise<CaptureResult>;
   voidAuthorization(req: VoidRequest): Promise<void>;
   payout(req: PayoutRequest): Promise<PayoutResult>;
@@ -27,9 +34,13 @@ export class MissingCredentialsError extends Error {
 }
 
 export class PaymentProviderError extends Error {
-  constructor(message: string, public status?: number, public retryable = false) {
+  public readonly status: number | undefined;
+  public readonly retryable: boolean;
+  constructor(message: string, status?: number, retryable = false) {
     super(message);
     this.name = 'PaymentProviderError';
+    this.status = status;
+    this.retryable = retryable;
   }
 }
 
@@ -62,6 +73,8 @@ function assertSandboxBaseUrl(url: string): void {
 export class SimulatedAdapter implements PaymentAdapter {
   public chargeCalls = 0;
   public authorizeCalls = 0;
+  public createAuthorizeOrderCalls = 0;
+  public authorizeOrderCalls = 0;
   public captureCalls = 0;
   public voidCalls = 0;
   public payoutCalls = 0;
@@ -76,6 +89,17 @@ export class SimulatedAdapter implements PaymentAdapter {
     this.authorizeCalls++;
     assertRepresentable(req.amount);
     return { ref: `auth_${req.escrowId}_${req.idempotencyKey}`, mode: 'SIMULATED' };
+  }
+
+  async createAuthorizeOrder(req: CreateAuthorizeOrderRequest): Promise<CreateAuthorizeOrderResult> {
+    this.createAuthorizeOrderCalls++;
+    assertRepresentable(req.amount);
+    return { orderId: `sim_order_${req.idempotencyKey}`, approveUrl: `https://sim.example.com/approve/${req.idempotencyKey}`, mode: 'SIMULATED' };
+  }
+
+  async authorizeOrder(req: AuthorizeOrderRequest): Promise<AuthorizeOrderResult> {
+    this.authorizeOrderCalls++;
+    return { ref: `auth_${req.orderId}_${req.idempotencyKey}`, mode: 'SIMULATED' };
   }
 
   async capture(req: CaptureRequest): Promise<CaptureResult> {
@@ -107,19 +131,23 @@ export function microToDecimal(amount: number): string {
   return `${whole}.${frac.toString().padStart(6, '0').slice(0, 2)}`;
 }
 
-async function fetchWithRetry<T>(
+interface FetchOptions extends RequestInit {
+  headers?: Record<string, string>;
+}
+
+async function fetchWithRetry(
   fetchImpl: typeof fetch,
   url: string,
-  options: RequestInit,
+  options: FetchOptions,
   idempotencyKey: string,
   maxRetries = 3
-): Promise<T> {
+): Promise<unknown> {
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const headers = new Headers(options.headers);
     headers.set('PayPal-Request-Id', idempotencyKey);
     const res = await fetchImpl(url, { ...options, headers });
-    if (res.ok) return res.json() as Promise<T>;
+    if (res.ok) return res.json();
     if (res.status === 429 || res.status >= 500) {
       lastError = new Error(`HTTP ${res.status}: ${await res.text()}`);
       if (attempt < maxRetries) {
@@ -132,10 +160,16 @@ async function fetchWithRetry<T>(
   throw lastError!;
 }
 
-export class SandboxAdapter implements PaymentAdapter {
-  constructor(private fetchImpl: typeof fetch = fetch) {}
+interface TokenResponse { access_token: string; }
 
-  private async getToken(): Promise<string> {
+export class SandboxAdapter implements PaymentAdapter {
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(fetchImpl: typeof fetch = fetch) {
+    this.fetchImpl = fetchImpl;
+  }
+
+  async getToken(): Promise<string> {
     const id = process.env.PAYPAL_CLIENT_ID;
     const secret = process.env.PAYPAL_CLIENT_SECRET;
     const missing: string[] = [];
@@ -143,7 +177,7 @@ export class SandboxAdapter implements PaymentAdapter {
     if (!secret) missing.push('PAYPAL_CLIENT_SECRET');
     if (missing.length) throw new MissingCredentialsError(missing);
 
-    const base = process.env.PAYPAL_BASE_URL ?? 'https://api-m.sandbox.paypal.com';
+    const base = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com';
     assertSandboxBaseUrl(base);
 
     const tokenRes = await fetchWithRetry(
@@ -158,14 +192,19 @@ export class SandboxAdapter implements PaymentAdapter {
         body: 'grant_type=client_credentials',
       },
       'token-' + crypto.randomUUID()
-    );
-    return (tokenRes as { access_token: string }).access_token;
+    ) as TokenResponse;
+    return tokenRes.access_token;
+  }
+
+  // Exposed for smoke test to test token directly
+  async getTokenForTest(): Promise<string> {
+    return this.getToken();
   }
 
   async charge(req: ChargeRequest): Promise<ChargeResult> {
     assertRepresentable(req.amount);
     const token = await this.getToken();
-    const base = process.env.PAYPAL_BASE_URL ?? 'https://api-m.sandbox.paypal.com';
+    const base = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com';
     assertSandboxBaseUrl(base);
 
     const orderRes = await fetchWithRetry(
@@ -183,27 +222,27 @@ export class SandboxAdapter implements PaymentAdapter {
         }),
       },
       req.idempotencyKey
-    );
-    const order = orderRes as { id: string };
+    ) as { id: string };
     const capRes = await fetchWithRetry(
       this.fetchImpl,
-      `${base}/v2/checkout/orders/${order.id}/capture`,
+      `${base}/v2/checkout/orders/${orderRes.id}/capture`,
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       },
       req.idempotencyKey
-    );
-    const cap = capRes as { purchase_units?: Array<{ payments?: { captures?: Array<{ id: string }> } }> };
-    const captureId = cap.purchase_units?.[0]?.payments?.captures?.[0]?.id;
+    ) as { purchase_units: Array<{ payments: { captures: Array<{ id: string }> } }> };
+    const captureId = capRes.purchase_units?.[0]?.payments?.captures?.[0]?.id;
     if (!captureId) throw new PaymentProviderError('capture response contained no capture id');
     return { ref: captureId, mode: 'SANDBOX' };
   }
 
   async authorize(req: AuthorizeRequest): Promise<AuthorizeResult> {
+    // Legacy one-call authorize - kept for backward compatibility with escrow flow
+    // This is NOT used by the smoke test
     assertRepresentable(req.amount);
     const token = await this.getToken();
-    const base = process.env.PAYPAL_BASE_URL ?? 'https://api-m.sandbox.paypal.com';
+    const base = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com';
     assertSandboxBaseUrl(base);
 
     const orderRes = await fetchWithRetry(
@@ -221,19 +260,64 @@ export class SandboxAdapter implements PaymentAdapter {
         }),
       },
       req.idempotencyKey
-    );
-    const order = orderRes as { id: string };
+    ) as { id: string };
     const authRes = await fetchWithRetry(
       this.fetchImpl,
-      `${base}/v2/checkout/orders/${order.id}/authorize`,
+      `${base}/v2/checkout/orders/${orderRes.id}/authorize`,
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       },
       req.idempotencyKey
-    );
-    const auth = authRes as { purchase_units?: Array<{ payments?: { authorizations?: Array<{ id: string }> } }> };
-    const authId = auth.purchase_units?.[0]?.payments?.authorizations?.[0]?.id;
+    ) as { purchase_units: Array<{ payments: { authorizations: Array<{ id: string }> } }> };
+    const authId = authRes.purchase_units?.[0]?.payments?.authorizations?.[0]?.id;
+    if (!authId) throw new PaymentProviderError('authorize response contained no authorization id');
+    return { ref: authId, mode: 'SANDBOX' };
+  }
+
+  async createAuthorizeOrder(req: CreateAuthorizeOrderRequest): Promise<CreateAuthorizeOrderResult> {
+    assertRepresentable(req.amount);
+    const token = await this.getToken();
+    const base = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com';
+    assertSandboxBaseUrl(base);
+
+    const orderRes = await fetchWithRetry(
+      this.fetchImpl,
+      `${base}/v2/checkout/orders`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          intent: 'AUTHORIZE',
+          purchase_units: [{ amount: { currency_code: req.currency, value: microToDecimal(req.amount) } }],
+        }),
+      },
+      req.idempotencyKey
+    ) as { id: string; links: Array<{ rel: string; href: string }> };
+    const approveLink = orderRes.links?.find((l) => l.rel === 'approve' || l.rel === 'payer-action');
+    const approveUrl = approveLink?.href;
+    if (!approveUrl) throw new PaymentProviderError('order response contained no approve link');
+    return { orderId: orderRes.id, approveUrl, mode: 'SANDBOX' };
+  }
+
+  async authorizeOrder(req: AuthorizeOrderRequest): Promise<AuthorizeOrderResult> {
+    const token = await this.getToken();
+    const base = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com';
+    assertSandboxBaseUrl(base);
+
+    const authRes = await fetchWithRetry(
+      this.fetchImpl,
+      `${base}/v2/checkout/orders/${req.orderId}/authorize`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      },
+      req.idempotencyKey
+    ) as { purchase_units: Array<{ payments: { authorizations: Array<{ id: string }> } }> };
+    const authId = authRes.purchase_units?.[0]?.payments?.authorizations?.[0]?.id;
     if (!authId) throw new PaymentProviderError('authorize response contained no authorization id');
     return { ref: authId, mode: 'SANDBOX' };
   }
@@ -241,7 +325,7 @@ export class SandboxAdapter implements PaymentAdapter {
   async capture(req: CaptureRequest): Promise<CaptureResult> {
     assertRepresentable(req.amount);
     const token = await this.getToken();
-    const base = process.env.PAYPAL_BASE_URL ?? 'https://api-m.sandbox.paypal.com';
+    const base = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com';
     assertSandboxBaseUrl(base);
 
     const capRes = await fetchWithRetry(
@@ -253,14 +337,13 @@ export class SandboxAdapter implements PaymentAdapter {
         body: JSON.stringify({ amount: { currency_code: 'USD', value: microToDecimal(req.amount) } }),
       },
       req.idempotencyKey
-    );
-    const cap = capRes as { id: string };
-    return { ref: cap.id, mode: 'SANDBOX' };
+    ) as { id: string };
+    return { ref: capRes.id, mode: 'SANDBOX' };
   }
 
   async voidAuthorization(req: VoidRequest): Promise<void> {
     const token = await this.getToken();
-    const base = process.env.PAYPAL_BASE_URL ?? 'https://api-m.sandbox.paypal.com';
+    const base = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com';
     assertSandboxBaseUrl(base);
 
     await fetchWithRetry(
@@ -277,7 +360,7 @@ export class SandboxAdapter implements PaymentAdapter {
   async payout(req: PayoutRequest): Promise<PayoutResult> {
     assertRepresentable(req.amount);
     const token = await this.getToken();
-    const base = process.env.PAYPAL_BASE_URL ?? 'https://api-m.sandbox.paypal.com';
+    const base = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com';
     assertSandboxBaseUrl(base);
 
     const payeeEmail = process.env.PAYPAL_PAYEE_EMAIL;
@@ -306,15 +389,14 @@ export class SandboxAdapter implements PaymentAdapter {
         }),
       },
       req.idempotencyKey
-    );
-    const payout = payoutRes as { batch_header?: { payout_batch_id: string } };
-    return { ref: payout.batch_header?.payout_batch_id ?? senderBatchId, mode: 'SANDBOX' };
+    ) as { batch_header: { payout_batch_id: string } };
+    return { ref: payoutRes.batch_header?.payout_batch_id || senderBatchId, mode: 'SANDBOX' };
   }
 
   async refund(req: RefundRequest): Promise<void> {
     assertRepresentable(req.amount);
     const token = await this.getToken();
-    const base = process.env.PAYPAL_BASE_URL ?? 'https://api-m.sandbox.paypal.com';
+    const base = process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com';
     assertSandboxBaseUrl(base);
 
     await fetchWithRetry(
@@ -328,4 +410,12 @@ export class SandboxAdapter implements PaymentAdapter {
       req.idempotencyKey
     );
   }
+}
+
+export function createPaymentAdapter(fetchImpl?: typeof fetch): PaymentAdapter {
+  const mode = process.env.SETTLEMENT_MODE || 'SIMULATED';
+  if (mode === 'PAYPAL_SANDBOX') {
+    return new SandboxAdapter(fetchImpl);
+  }
+  return new SimulatedAdapter();
 }

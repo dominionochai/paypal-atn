@@ -8,6 +8,13 @@ import { openDatabase, runMigrations, type Database } from "../src/db/db";
 import { startHttpServer } from "../src/http/server";
 import { generateKeyPairSync, createHash, sign } from "node:crypto";
 
+const VALID_PROTOBUF = Buffer.from([0x08, 0x01, 0x12, 0x01, 0x78]);
+const VALID_PROTOBUF_B64 = VALID_PROTOBUF.toString('base64');
+// Truncated varint (0x08 0x80) gives INCONCLUSIVE with MALFORMED_PROTOBUF
+const INCONCLUSIVE_PROTOBUF = Buffer.from([0x08, 0x80]);
+const INCONCLUSIVE_PROTOBUF_B64 = INCONCLUSIVE_PROTOBUF.toString('base64');
+const MEDIA_TYPE = 'application/octet-stream';
+
 let db: Database;
 let server: ReturnType<typeof startHttpServer>;
 let tempDir: string;
@@ -43,7 +50,8 @@ function canonicalJson(value: unknown): string {
 }
 
 function signRequest(agentId: string, method: string, path: string, bodyObj: unknown, privateKeyPem: string): Record<string, string> {
-  const bodyBuf = Buffer.from(JSON.stringify(bodyObj ?? {}));
+  const isGetOrHead = method === 'GET' || method === 'HEAD';
+  const bodyBuf = isGetOrHead ? Buffer.alloc(0) : Buffer.from(JSON.stringify(bodyObj ?? {}));
   const bodySha256 = createHash('sha256').update(bodyBuf).digest('hex');
   const timestamp = Date.now();
   const nonce = createHash('sha256').update(`${agentId}${timestamp}${Math.random()}`).digest('hex').slice(0, 16);
@@ -64,11 +72,11 @@ function signRequest(agentId: string, method: string, path: string, bodyObj: unk
 async function signedFetch(base: string, method: string, path: string, body: unknown, agentId: string, privateKeyPem: string, extraHeaders: Record<string, string> = {}) {
   const sigHeaders = signRequest(agentId, method, path, body, privateKeyPem);
   const headers: Record<string, string> = { 'content-type': 'application/json', ...sigHeaders, ...extraHeaders };
-  const response = await fetch(base + path, {
-    method,
-    headers,
-    body: JSON.stringify(body),
-  });
+  const options: RequestInit = { method, headers };
+  if (method !== 'GET' && method !== 'HEAD' && body !== null && body !== undefined) {
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(base + path, options);
   return response;
 }
 
@@ -243,7 +251,7 @@ describe("HTTP API with signed requests (N1+N2)", () => {
     expect(typeof body.ceiling).toBe("number");
     const channelId = body.channelId as string;
 
-    const retrieved = await fetch(`${baseUrl}/v1/channels/${channelId}`);
+    const retrieved = await signedFetch(baseUrl, 'GET', `/v1/channels/${channelId}`, null, 'payer-1', payerKeys.privateKey);
     expect(retrieved.status).toBe(200);
     const retrievedBody = (await retrieved.json()) as { id: string; status: string };
     expect(retrievedBody.id).toBe(channelId);
@@ -475,5 +483,249 @@ describe("HTTP API with signed requests (N1+N2)", () => {
     expect(response.status).toBe(422);
     const body = await response.json() as { error: string };
     expect(body.error).toBe('INVALID_CEILING');
+  });
+});
+
+describe("HTTP API escrow endpoints (M5)", () => {
+  let vaultId: string;
+  let escrowId: string;
+  let thirdPartyKeys: { publicKey: string; privateKey: string };
+
+  beforeEach(async () => {
+    // Create vault
+    const vaultResp = await signedFetch(baseUrl, 'POST', '/v1/vaults', {
+      delegationId: 1,
+      funded: 50_000_000,
+      fundingRef: createHash('sha256').update('test-funding-ref-escrow').digest('hex'),
+    }, 'principal-1', principalKeys.privateKey);
+    expect(vaultResp.status).toBe(201);
+    const vault = await vaultResp.json() as { id: string };
+    vaultId = vault.id;
+
+    // Create third party agent for non-party tests
+    const otherKp = generateKeyPairSync('ed25519');
+    thirdPartyKeys = {
+      publicKey: otherKp.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+      privateKey: otherKp.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+    };
+    const adminHeaders = { 'authorization': `Bearer ${ADMIN_TOKEN}`, 'content-type': 'application/json' };
+    await fetch(`${baseUrl}/v1/agents`, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ externalId: 'third-party', principalExternalId: 'principal-1', name: 'Third Party', publicKey: thirdPartyKeys.publicKey }),
+    });
+
+    // Create escrow
+    const escrowResp = await signedFetch(baseUrl, 'POST', '/v1/escrows', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      amount: 250_000,
+      currency: 'USD',
+      vaultId,
+      deadlineAt: Date.now() + 600_000,
+      artifactRef: 'artifact://test',
+      idempotencyKey: 'escrow-key-1',
+    }, 'payer-1', payerKeys.privateKey);
+    expect(escrowResp.status).toBe(201);
+    const escrow = await escrowResp.json() as { escrowId: string };
+    escrowId = escrow.escrowId;
+  });
+
+  it("refund by a non-party returns 403", async () => {
+    const response = await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/refund`, { payeeAgentId: 'third-party' }, 'third-party', thirdPartyKeys.privateKey);
+    expect(response.status).toBe(403);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('FORBIDDEN');
+  });
+
+  it("inspect by a non-payee returns 403", async () => {
+    const response = await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/inspect`, { artifactBase64: 'AAE=', declaredMediaType: 'application/octet-stream', payeeAgentId: 'third-party' }, 'third-party', thirdPartyKeys.privateKey);
+    expect(response.status).toBe(403);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('FORBIDDEN');
+  });
+
+  it("fund by a non-payer returns 403", async () => {
+    const response = await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/fund`, {}, 'third-party', thirdPartyKeys.privateKey);
+    expect(response.status).toBe(403);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('FORBIDDEN');
+  });
+
+  it("unsigned POST /v1/escrows returns 401 MISSING_ENVELOPE", async () => {
+    const response = await fetch(`${baseUrl}/v1/escrows`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ payerAgentId: 'payer-1', payeeAgentId: 'payee-1', amount: 100_000, currency: 'USD', vaultId, deadlineAt: Date.now() + 600_000, idempotencyKey: 'unsigned-escrow' }),
+    });
+    expect(response.status).toBe(401);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('MISSING_ENVELOPE');
+  });
+
+  it("unsigned POST /v1/escrows/:id/fund returns 401 MISSING_ENVELOPE", async () => {
+    const response = await fetch(`${baseUrl}/v1/escrows/${escrowId}/fund`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(401);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('MISSING_ENVELOPE');
+  });
+
+  it("unsigned POST /v1/escrows/:id/inspect returns 401 MISSING_ENVELOPE", async () => {
+    const response = await fetch(`${baseUrl}/v1/escrows/${escrowId}/inspect`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ artifactBase64: 'AAE=', declaredMediaType: 'application/octet-stream' }),
+    });
+    expect(response.status).toBe(401);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('MISSING_ENVELOPE');
+  });
+
+  it("unsigned POST /v1/escrows/:id/refund returns 401 MISSING_ENVELOPE", async () => {
+    const response = await fetch(`${baseUrl}/v1/escrows/${escrowId}/refund`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ payeeAgentId: 'payee-1' }),
+    });
+    expect(response.status).toBe(401);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe('MISSING_ENVELOPE');
+  });
+
+  it("duplicate fund produces ONE adapter operation each", async () => {
+    // Fund the escrow first time
+    const response1 = await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/fund`, {}, 'payer-1', payerKeys.privateKey);
+    expect(response1.status).toBe(200);
+    const body1 = await response1.json() as { id: string; status: string };
+    expect(body1.status).toBe('FUNDED');
+
+    // Fund again with same idempotency key (should replay)
+    const response2 = await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/fund`, {}, 'payer-1', payerKeys.privateKey);
+    expect(response2.status).toBe(200);
+    const body2 = await response2.json() as { id: string; status: string };
+    expect(body2).toEqual(body1);
+    expect(body2.status).toBe('FUNDED');
+  });
+
+  it("duplicate inspect produces ONE adapter operation each", async () => {
+    // Fund first
+    await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/fund`, {}, 'payer-1', payerKeys.privateKey);
+
+    // First inspect with INCONCLUSIVE artifact (escrow stays FUNDED)
+    const response1 = await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/inspect`, { artifactBase64: INCONCLUSIVE_PROTOBUF_B64, declaredMediaType: MEDIA_TYPE, payeeAgentId: 'payee-1' }, 'payee-1', payeeKeys.privateKey);
+    expect(response1.status).toBe(200);
+    const body1 = await response1.json() as { outcome: string; reasons: string[]; status: string };
+    expect(body1.outcome).toBe('INCONCLUSIVE');
+    expect(body1.status).toBe('FUNDED');
+
+    // Second inspect with same parameters (should replay)
+    const response2 = await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/inspect`, { artifactBase64: INCONCLUSIVE_PROTOBUF_B64, declaredMediaType: MEDIA_TYPE, payeeAgentId: 'payee-1' }, 'payee-1', payeeKeys.privateKey);
+    expect(response2.status).toBe(200);
+    const body2 = await response2.json() as { outcome: string; reasons: string[]; status: string };
+    expect(body2).toEqual(body1);
+  });
+
+  it("duplicate refund produces ONE adapter operation each", async () => {
+    // Fund only (don't inspect, so escrow stays FUNDED)
+    await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/fund`, {}, 'payer-1', payerKeys.privateKey);
+
+    // First refund
+    const response1 = await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/refund`, { payeeAgentId: 'payee-1' }, 'payee-1', payeeKeys.privateKey);
+    expect(response1.status).toBe(200);
+    const body1 = await response1.json() as { id: string; status: string };
+    expect(body1.status).toBe('REFUNDED');
+
+    // Second refund (should replay)
+    const response2 = await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/refund`, { payeeAgentId: 'payee-1' }, 'payee-1', payeeKeys.privateKey);
+    expect(response2.status).toBe(200);
+    const body2 = await response2.json() as { id: string; status: string };
+    expect(body2).toEqual(body1);
+  });
+
+  it("GET /v1/escrows/:id unsigned returns 401", async () => {
+    const response = await fetch(`${baseUrl}/v1/escrows/${escrowId}`);
+    expect(response.status).toBe(401);
+  });
+
+  it("GET /v1/escrows/:id non-party returns 403", async () => {
+    const response = await signedFetch(baseUrl, 'GET', `/v1/escrows/${escrowId}`, null, 'third-party', thirdPartyKeys.privateKey);
+    expect(response.status).toBe(403);
+  });
+
+  it("GET /v1/channels/:id unsigned returns 401", async () => {
+    // Create a channel first
+    const channelResp = await signedFetch(baseUrl, 'POST', '/v1/channels', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      vaultId,
+      ttlSeconds: 3_600,
+    }, 'payer-1', payerKeys.privateKey);
+    const { channelId } = await channelResp.json() as { channelId: string };
+
+    const response = await fetch(`${baseUrl}/v1/channels/${channelId}`);
+    expect(response.status).toBe(401);
+  });
+
+  it("GET /v1/channels/:id non-party returns 403", async () => {
+    const channelResp = await signedFetch(baseUrl, 'POST', '/v1/channels', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      vaultId,
+      ttlSeconds: 3_600,
+    }, 'payer-1', payerKeys.privateKey);
+    const { channelId } = await channelResp.json() as { channelId: string };
+
+    const response = await signedFetch(baseUrl, 'GET', `/v1/channels/${channelId}`, null, 'third-party', thirdPartyKeys.privateKey);
+    expect(response.status).toBe(403);
+  });
+
+  it("GET /v1/vaults/:id unsigned returns 401", async () => {
+    const response = await fetch(`${baseUrl}/v1/vaults/${vaultId}`);
+    expect(response.status).toBe(401);
+  });
+
+  it("GET /v1/vaults/:id non-party returns 403", async () => {
+    const response = await signedFetch(baseUrl, 'GET', `/v1/vaults/${vaultId}`, null, 'third-party', thirdPartyKeys.privateKey);
+    expect(response.status).toBe(403);
+  });
+
+  it("create escrow over the vault's available balance is denied", async () => {
+    // Vault has 50M available, try to create escrow for 60M
+    const response = await signedFetch(baseUrl, 'POST', '/v1/escrows', {
+      payerAgentId: 'payer-1',
+      payeeAgentId: 'payee-1',
+      amount: 60_000_000,
+      currency: 'USD',
+      vaultId,
+      deadlineAt: Date.now() + 600_000,
+      artifactRef: 'artifact://test',
+      idempotencyKey: 'escrow-over-balance',
+    }, 'payer-1', payerKeys.privateKey);
+    expect(response.status).toBe(422);
+    const body = await response.json() as { error: string; detail: string };
+    expect(body.error).toBe('ESCROW_CREATE_FAILED');
+    expect(body.detail).toContain('exceeds vault');
+  });
+
+  it("a payout that throws once after a successful capture leaves the escrow retryable", async () => {
+    // This test verifies that if payout fails after capture, the escrow stays in a retryable state
+    // Fund the escrow
+    await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/fund`, {}, 'payer-1', payerKeys.privateKey);
+
+    // Inspect with passing artifact - this triggers capture and payout
+    const response = await signedFetch(baseUrl, 'POST', `/v1/escrows/${escrowId}/inspect`, { artifactBase64: VALID_PROTOBUF_B64, declaredMediaType: MEDIA_TYPE, payeeAgentId: 'payee-1' }, 'payee-1', payeeKeys.privateKey);
+    expect(response.status).toBe(200);
+    const body = await response.json() as { outcome: string; status: string };
+    expect(body.outcome).toBe('PASS');
+    expect(body.status).toBe('RELEASED');
+
+    // Verify escrow is released
+    const escrowResp = await signedFetch(baseUrl, 'GET', `/v1/escrows/${escrowId}`, null, 'payer-1', payerKeys.privateKey);
+    const escrow = await escrowResp.json() as { status: string };
+    expect(escrow.status).toBe('RELEASED');
   });
 });

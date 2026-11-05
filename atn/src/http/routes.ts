@@ -3,7 +3,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import type { Database } from '../db/db.js';
 import { openChannel, getChannel, acceptVoucher, settleChannel, closeChannel, AlreadySettledError, UnknownChannelError } from '../streaming/channel.js';
 import type { VoucherInput } from '../streaming/voucher.js';
-import { SimulatedAdapter } from '../payments/adapter.js';
+import { createPaymentAdapter } from '../payments/adapter.js';
 import { createEscrow, fundEscrow, inspectEscrow, refundEscrow } from '../escrow/escrow.js';
 import { verifyDelegation, verifyRequest, type DelegationPayload, type RequestEnvelopePayload } from '../trust/crypto.js';
 import { createVault, getVault, revokeDelegation, revokeVault } from '../trust/authority.js';
@@ -63,6 +63,8 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
   const segments = path.split('?')[0]?.split('/').filter((s) => s.length > 0) ?? [];
   const isMutating = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method);
   const isAdminRoute = segments.length === 2 && segments[0] === 'v1' && (segments[1] === 'principals' || segments[1] === 'agents');
+  const isProtectedGet = method === 'GET' && segments.length === 3 && segments[0] === 'v1' && (segments[1] === 'escrows' || segments[1] === 'channels' || segments[1] === 'vaults');
+  let verifiedActorId: string | null = null;
 
   try {
     // 3. Admin token fails CLOSED
@@ -76,7 +78,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
     }
 
     // 1. Mandatory Signed Request Envelope on every mutating route (except admin registration routes)
-    if (isMutating && !isAdminRoute) {
+    if ((isMutating || isProtectedGet) && !isAdminRoute) {
       const hAgent = headers['x-atn-agent-id'];
       const hNonce = headers['x-atn-nonce'];
       const hTimestamp = headers['x-atn-timestamp'];
@@ -142,6 +144,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
 
         publicKey = principal.ed25519_public_key;
         actorId = principal.external_id;
+        verifiedActorId = actorId;
 
         // Authorization checks for principal-signed routes
         if (segments.length === 2 && segments[0] === 'v1' && segments[1] === 'vaults') {
@@ -180,6 +183,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         if (agent.revoked_at !== null) return forbidden('agent revoked', 'AGENT_REVOKED');
         publicKey = agent.ed25519_public_key;
         actorId = agent.external_id;
+        verifiedActorId = actorId;
 
         // Route-specific actor checks
         const parsedBody = parseJsonBody(body);
@@ -220,8 +224,33 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
             if (typeof bodyPayee === 'string' && bodyPayee !== actorId) {
               return forbidden('escrow action requires payee agent', 'FORBIDDEN');
             }
+}
+        }
+        // GET /v1/escrows/:id - signer must be payer or payee
+        else if (method === 'GET' && segments.length === 3 && segments[0] === 'v1' && segments[1] === 'escrows') {
+          const escrow = db.prepare('SELECT payer_agent_id, payee_agent_id FROM escrows WHERE id = ?').get(segments[2]) as { payer_agent_id: string; payee_agent_id: string } | undefined;
+          if (!escrow) return json(404, { error: 'NOT_FOUND', detail: 'unknown escrow' });
+          if (verifiedActorId !== escrow.payer_agent_id && verifiedActorId !== escrow.payee_agent_id) {
+            return forbidden('escrow access requires payer or payee agent', 'FORBIDDEN');
           }
         }
+        // GET /v1/channels/:id - signer must be payer or payee
+        else if (method === 'GET' && segments.length === 3 && segments[0] === 'v1' && segments[1] === 'channels') {
+          const channel = db.prepare('SELECT payer_agent_id, payee_agent_id FROM channels WHERE id = ?').get(segments[2]) as { payer_agent_id: string; payee_agent_id: string } | undefined;
+          if (!channel) return json(404, { error: 'NOT_FOUND', detail: 'unknown channel' });
+          if (verifiedActorId !== channel.payer_agent_id && verifiedActorId !== channel.payee_agent_id) {
+            return forbidden('channel access requires payer or payee agent', 'FORBIDDEN');
+          }
+        }
+        // GET /v1/vaults/:id - signer must be vault's delegation principal
+        else if (method === 'GET' && segments.length === 3 && segments[0] === 'v1' && segments[1] === 'vaults') {
+          const vault = db.prepare('SELECT d.principal_id FROM vaults AS v JOIN delegations AS d ON d.id = v.delegation_id WHERE v.id = ?').get(segments[2]) as { principal_id: number } | undefined;
+          if (!vault) return json(404, { error: 'NOT_FOUND', detail: 'unknown vault' });
+          const principal = db.prepare('SELECT external_id FROM principals WHERE id = ?').get(vault.principal_id) as { external_id: string } | undefined;
+          if (!principal || verifiedActorId !== principal.external_id) {
+            return forbidden('vault access requires delegation principal', 'FORBIDDEN');
+          }
+}
       }
 
       const valid = verifyRequest(reqPayload, signature, publicKey);
@@ -500,7 +529,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         const idempotencyKey = parsed.idempotencyKey;
         if (!nonEmptyString(idempotencyKey)) return bad('idempotencyKey must be a non-empty string');
         try {
-          const settlement = await settleChannel(db, channelId, idempotencyKey, new SimulatedAdapter());
+          const settlement = await settleChannel(db, channelId, idempotencyKey, createPaymentAdapter());
           return json(200, {
             channelId: settlement.channel_id,
             amount: settlement.amount,
@@ -575,8 +604,14 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       }
 
       if (method === 'POST' && segments.length === 4 && segments[3] === 'fund') {
+        if (!verifiedActorId) return unauthorized('Missing actor identity');
+        const escrow = db.prepare('SELECT payer_agent_id FROM escrows WHERE id = ?').get(escrowId) as { payer_agent_id: string } | undefined;
+        if (!escrow) return json(404, { error: 'NOT_FOUND', detail: 'unknown escrow' });
+        if (verifiedActorId !== escrow.payer_agent_id) {
+          return forbidden('escrow funding requires payer agent', 'FORBIDDEN');
+        }
         try {
-          const funded = await fundEscrow(db, escrowId, new SimulatedAdapter());
+          const funded = await fundEscrow(db, escrowId, createPaymentAdapter());
           return json(200, { id: funded.id, status: funded.status });
         } catch (e) {
           const detail = e instanceof Error ? e.message : String(e);
@@ -586,6 +621,12 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       }
 
       if (method === 'POST' && segments.length === 4 && segments[3] === 'inspect') {
+        if (!verifiedActorId) return unauthorized('Missing actor identity');
+        const escrow = db.prepare('SELECT payee_agent_id FROM escrows WHERE id = ?').get(escrowId) as { payee_agent_id: string } | undefined;
+        if (!escrow) return json(404, { error: 'NOT_FOUND', detail: 'unknown escrow' });
+        if (verifiedActorId !== escrow.payee_agent_id) {
+          return forbidden('escrow inspection requires payee agent', 'FORBIDDEN');
+        }
         const parsed = parseJsonBody(body);
         if (!parsed) return bad('body must be a JSON object');
         const { artifactBase64, declaredMediaType } = parsed;
@@ -594,7 +635,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         if (bytes.length === 0) return bad('artifactBase64 must be valid base64');
         const mediaType = nonEmptyString(declaredMediaType) ? declaredMediaType : 'application/octet-stream';
         try {
-          const result = await inspectEscrow(db, escrowId, bytes, mediaType, new SimulatedAdapter());
+          const result = await inspectEscrow(db, escrowId, bytes, mediaType, createPaymentAdapter());
           const updated = db.prepare('SELECT status FROM escrows WHERE id = ?').get(escrowId) as { status: string };
           return json(200, { outcome: result.outcome, reasons: result.reasons, status: updated.status });
         } catch (e) {
@@ -607,8 +648,14 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       // Remove the release endpoint
 
       if (method === 'POST' && segments.length === 4 && segments[3] === 'refund') {
+        if (!verifiedActorId) return unauthorized('Missing actor identity');
+        const escrow = db.prepare('SELECT payee_agent_id FROM escrows WHERE id = ?').get(escrowId) as { payee_agent_id: string } | undefined;
+        if (!escrow) return json(404, { error: 'NOT_FOUND', detail: 'unknown escrow' });
+        if (verifiedActorId !== escrow.payee_agent_id) {
+          return forbidden('escrow refund requires payee agent', 'FORBIDDEN');
+        }
         try {
-          const refunded = await refundEscrow(db, escrowId, new SimulatedAdapter());
+          const refunded = await refundEscrow(db, escrowId, createPaymentAdapter());
           return json(200, { id: escrowId, status: refunded.status });
         } catch (e) {
           const detail = e instanceof Error ? e.message : String(e);
