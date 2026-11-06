@@ -118,8 +118,8 @@ async function waitReady(base) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     if (childExit) throw new Error('Server exited before readiness (code ' + childExit.code + ')');
     try {
-      const probe = await call(base, 'GET', '/v1/channels/none');
-      if (probe.status === 404) return probe.status;
+      const probe = await call(base, 'GET', '/health');
+      if (probe.status === 200) return probe.status;
     } catch { /* not listening yet */ }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }

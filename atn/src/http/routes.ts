@@ -66,6 +66,10 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
   const isProtectedGet = method === 'GET' && segments.length === 3 && segments[0] === 'v1' && (segments[1] === 'escrows' || segments[1] === 'channels' || segments[1] === 'vaults');
   let verifiedActorId: string | null = null;
 
+  if (method === 'GET' && segments.length === 1 && segments[0] === 'health') {
+    return json(200, { ok: true, mode: process.env.SETTLEMENT_MODE || 'SIMULATED' });
+  }
+
   try {
     // 3. Admin token fails CLOSED
     if (isAdminRoute && method === 'POST') {

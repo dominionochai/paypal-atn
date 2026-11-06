@@ -412,10 +412,64 @@ export class SandboxAdapter implements PaymentAdapter {
   }
 }
 
+/**
+ * Server-path adapter for SETTLEMENT_MODE=PAYPAL_SANDBOX.
+ * PayPal Orders need a human buyer to approve each order in a browser, so escrow holds
+ * (authorize, capture, void, refund) stay ledger-only here. Real PayPal calls on this path:
+ * Payouts, used for channel settlement and escrow release. The real Orders flow
+ * (authorize, capture, void, refund) is exercised by `npm run paypal:smoke`.
+ */
+export class HybridSandboxAdapter implements PaymentAdapter {
+  private readonly ledger = new SimulatedAdapter();
+  private readonly paypal: SandboxAdapter;
+
+  constructor(fetchImpl?: typeof fetch) {
+    this.paypal = new SandboxAdapter(fetchImpl);
+  }
+
+  async charge(req: ChargeRequest): Promise<ChargeResult> {
+    const out = await this.paypal.payout({
+      amount: req.amount,
+      currency: req.currency,
+      payeeRef: req.channelId,
+      idempotencyKey: req.idempotencyKey,
+    });
+    return { ref: out.ref, mode: out.mode };
+  }
+
+  authorize(req: AuthorizeRequest): Promise<AuthorizeResult> {
+    return this.ledger.authorize(req);
+  }
+
+  createAuthorizeOrder(req: CreateAuthorizeOrderRequest): Promise<CreateAuthorizeOrderResult> {
+    return this.paypal.createAuthorizeOrder(req);
+  }
+
+  authorizeOrder(req: AuthorizeOrderRequest): Promise<AuthorizeOrderResult> {
+    return this.paypal.authorizeOrder(req);
+  }
+
+  capture(req: CaptureRequest): Promise<CaptureResult> {
+    return this.ledger.capture(req);
+  }
+
+  voidAuthorization(req: VoidRequest): Promise<void> {
+    return this.ledger.voidAuthorization(req);
+  }
+
+  payout(req: PayoutRequest): Promise<PayoutResult> {
+    return this.paypal.payout(req);
+  }
+
+  refund(req: RefundRequest): Promise<void> {
+    return this.ledger.refund(req);
+  }
+}
+
 export function createPaymentAdapter(fetchImpl?: typeof fetch): PaymentAdapter {
   const mode = process.env.SETTLEMENT_MODE || 'SIMULATED';
   if (mode === 'PAYPAL_SANDBOX') {
-    return new SandboxAdapter(fetchImpl);
+    return new HybridSandboxAdapter(fetchImpl);
   }
   return new SimulatedAdapter();
 }

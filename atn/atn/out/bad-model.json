@@ -1,0 +1,2697 @@
+{
+  "model": "MOCK MODEL",
+  "timestamp": 1793929860749,
+  "transcript": [
+    {
+      "timestamp": 1793929860480,
+      "type": "event",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "type": "scenario_start",
+        "name": "bad-model"
+      }
+    },
+    {
+      "timestamp": 1793929860664,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860664,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "toolCalls": [
+            {
+              "name": "list_workers",
+              "arguments": {},
+              "id": "call_1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860664,
+      "type": "tool_call",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolCall": {
+          "name": "list_workers",
+          "arguments": {},
+          "id": "call_1"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "tool_result",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolResult": {
+          "toolCallId": "call_1",
+          "name": "list_workers",
+          "result": [
+            {
+              "id": "buyer",
+              "name": "Buyer",
+              "type": "data_science",
+              "trustScore": 500
+            },
+            {
+              "id": "scraper",
+              "name": "Scraper",
+              "type": "scraper",
+              "trustScore": 500
+            },
+            {
+              "id": "data_science",
+              "name": "Data Science",
+              "type": "data_science",
+              "trustScore": 500
+            },
+            {
+              "id": "attacker",
+              "name": "Attacker",
+              "type": "data_science",
+              "trustScore": 500
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "toolCalls": [
+            {
+              "name": "list_workers",
+              "arguments": {},
+              "id": "call_1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "tool_call",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolCall": {
+          "name": "list_workers",
+          "arguments": {},
+          "id": "call_1"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "tool_result",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolResult": {
+          "toolCallId": "call_1",
+          "name": "list_workers",
+          "result": [
+            {
+              "id": "buyer",
+              "name": "Buyer",
+              "type": "data_science",
+              "trustScore": 500
+            },
+            {
+              "id": "scraper",
+              "name": "Scraper",
+              "type": "scraper",
+              "trustScore": 500
+            },
+            {
+              "id": "data_science",
+              "name": "Data Science",
+              "type": "data_science",
+              "trustScore": 500
+            },
+            {
+              "id": "attacker",
+              "name": "Attacker",
+              "type": "data_science",
+              "trustScore": 500
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "toolCalls": [
+            {
+              "name": "get_vault_balance",
+              "arguments": {},
+              "id": "call_2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "tool_call",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolCall": {
+          "name": "get_vault_balance",
+          "arguments": {},
+          "id": "call_2"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "tool_result",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolResult": {
+          "toolCallId": "call_2",
+          "name": "get_vault_balance",
+          "result": {
+            "funded": 50000000,
+            "reserved": 0,
+            "committed": 0,
+            "available": 50000000
+          }
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "get_vault_balance",
+                  "arguments": {},
+                  "id": "call_2"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_2",
+                  "name": "get_vault_balance",
+                  "result": {
+                    "funded": 50000000,
+                    "reserved": 0,
+                    "committed": 0,
+                    "available": 50000000
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "toolCalls": [
+            {
+              "name": "open_channel",
+              "arguments": {
+                "worker": "scraper",
+                "ceiling_micros": 100000
+              },
+              "id": "call_3"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860665,
+      "type": "tool_call",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolCall": {
+          "name": "open_channel",
+          "arguments": {
+            "worker": "scraper",
+            "ceiling_micros": 100000
+          },
+          "id": "call_3"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "tool_result",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolResult": {
+          "toolCallId": "call_3",
+          "name": "open_channel",
+          "result": {
+            "channelId": "73ecc5ee-0f06-4df2-9cfe-13b97c30db74",
+            "ceiling": 100000,
+            "expiresAt": 1793931660627,
+            "vaultId": "cc3aef84-0f91-493a-8ff9-15d65574acf2"
+          }
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "get_vault_balance",
+                  "arguments": {},
+                  "id": "call_2"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_2",
+                  "name": "get_vault_balance",
+                  "result": {
+                    "funded": 50000000,
+                    "reserved": 0,
+                    "committed": 0,
+                    "available": 50000000
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "open_channel",
+                  "arguments": {
+                    "worker": "scraper",
+                    "ceiling_micros": 100000
+                  },
+                  "id": "call_3"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_3",
+                  "name": "open_channel",
+                  "result": {
+                    "channelId": "73ecc5ee-0f06-4df2-9cfe-13b97c30db74",
+                    "ceiling": 100000,
+                    "expiresAt": 1793931660627,
+                    "vaultId": "cc3aef84-0f91-493a-8ff9-15d65574acf2"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "toolCalls": [
+            {
+              "name": "stream_pages",
+              "arguments": {
+                "n": 500
+              },
+              "id": "call_4"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "tool_call",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolCall": {
+          "name": "stream_pages",
+          "arguments": {
+            "n": 500
+          },
+          "id": "call_4"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "tool_result",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolResult": {
+          "toolCallId": "call_4",
+          "name": "stream_pages",
+          "result": {
+            "error": "No open channel"
+          }
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "get_vault_balance",
+                  "arguments": {},
+                  "id": "call_2"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_2",
+                  "name": "get_vault_balance",
+                  "result": {
+                    "funded": 50000000,
+                    "reserved": 0,
+                    "committed": 0,
+                    "available": 50000000
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "open_channel",
+                  "arguments": {
+                    "worker": "scraper",
+                    "ceiling_micros": 100000
+                  },
+                  "id": "call_3"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_3",
+                  "name": "open_channel",
+                  "result": {
+                    "channelId": "73ecc5ee-0f06-4df2-9cfe-13b97c30db74",
+                    "ceiling": 100000,
+                    "expiresAt": 1793931660627,
+                    "vaultId": "cc3aef84-0f91-493a-8ff9-15d65574acf2"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "stream_pages",
+                  "arguments": {
+                    "n": 500
+                  },
+                  "id": "call_4"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_4",
+                  "name": "stream_pages",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "toolCalls": [
+            {
+              "name": "settle_channel",
+              "arguments": {},
+              "id": "call_5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "tool_call",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolCall": {
+          "name": "settle_channel",
+          "arguments": {},
+          "id": "call_5"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "tool_result",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolResult": {
+          "toolCallId": "call_5",
+          "name": "settle_channel",
+          "result": {
+            "error": "No open channel"
+          }
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "get_vault_balance",
+                  "arguments": {},
+                  "id": "call_2"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_2",
+                  "name": "get_vault_balance",
+                  "result": {
+                    "funded": 50000000,
+                    "reserved": 0,
+                    "committed": 0,
+                    "available": 50000000
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "open_channel",
+                  "arguments": {
+                    "worker": "scraper",
+                    "ceiling_micros": 100000
+                  },
+                  "id": "call_3"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_3",
+                  "name": "open_channel",
+                  "result": {
+                    "channelId": "73ecc5ee-0f06-4df2-9cfe-13b97c30db74",
+                    "ceiling": 100000,
+                    "expiresAt": 1793931660627,
+                    "vaultId": "cc3aef84-0f91-493a-8ff9-15d65574acf2"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "stream_pages",
+                  "arguments": {
+                    "n": 500
+                  },
+                  "id": "call_4"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_4",
+                  "name": "stream_pages",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "settle_channel",
+                  "arguments": {},
+                  "id": "call_5"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_5",
+                  "name": "settle_channel",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "toolCalls": [
+            {
+              "name": "create_escrow",
+              "arguments": {
+                "worker": "data_science",
+                "amount_micros": 25000000
+              },
+              "id": "call_6"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860725,
+      "type": "tool_call",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolCall": {
+          "name": "create_escrow",
+          "arguments": {
+            "worker": "data_science",
+            "amount_micros": 25000000
+          },
+          "id": "call_6"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860732,
+      "type": "tool_result",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolResult": {
+          "toolCallId": "call_6",
+          "name": "create_escrow",
+          "result": {
+            "error": "HTTP 404: {\"error\":\"NOT_FOUND\"}",
+            "errorCode": "NOT_FOUND"
+          },
+          "errorCode": "NOT_FOUND"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860732,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "get_vault_balance",
+                  "arguments": {},
+                  "id": "call_2"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_2",
+                  "name": "get_vault_balance",
+                  "result": {
+                    "funded": 50000000,
+                    "reserved": 0,
+                    "committed": 0,
+                    "available": 50000000
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "open_channel",
+                  "arguments": {
+                    "worker": "scraper",
+                    "ceiling_micros": 100000
+                  },
+                  "id": "call_3"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_3",
+                  "name": "open_channel",
+                  "result": {
+                    "channelId": "73ecc5ee-0f06-4df2-9cfe-13b97c30db74",
+                    "ceiling": 100000,
+                    "expiresAt": 1793931660627,
+                    "vaultId": "cc3aef84-0f91-493a-8ff9-15d65574acf2"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "stream_pages",
+                  "arguments": {
+                    "n": 500
+                  },
+                  "id": "call_4"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_4",
+                  "name": "stream_pages",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "settle_channel",
+                  "arguments": {},
+                  "id": "call_5"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_5",
+                  "name": "settle_channel",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "create_escrow",
+                  "arguments": {
+                    "worker": "data_science",
+                    "amount_micros": 25000000
+                  },
+                  "id": "call_6"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_6",
+                  "name": "create_escrow",
+                  "result": {
+                    "error": "HTTP 404: {\"error\":\"NOT_FOUND\"}",
+                    "errorCode": "NOT_FOUND"
+                  },
+                  "errorCode": "NOT_FOUND"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860733,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "toolCalls": [
+            {
+              "name": "fund_escrow",
+              "arguments": {},
+              "id": "call_7"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860733,
+      "type": "tool_call",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolCall": {
+          "name": "fund_escrow",
+          "arguments": {},
+          "id": "call_7"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860733,
+      "type": "tool_result",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolResult": {
+          "toolCallId": "call_7",
+          "name": "fund_escrow",
+          "result": {
+            "error": "No escrow to fund"
+          }
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860733,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "get_vault_balance",
+                  "arguments": {},
+                  "id": "call_2"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_2",
+                  "name": "get_vault_balance",
+                  "result": {
+                    "funded": 50000000,
+                    "reserved": 0,
+                    "committed": 0,
+                    "available": 50000000
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "open_channel",
+                  "arguments": {
+                    "worker": "scraper",
+                    "ceiling_micros": 100000
+                  },
+                  "id": "call_3"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_3",
+                  "name": "open_channel",
+                  "result": {
+                    "channelId": "73ecc5ee-0f06-4df2-9cfe-13b97c30db74",
+                    "ceiling": 100000,
+                    "expiresAt": 1793931660627,
+                    "vaultId": "cc3aef84-0f91-493a-8ff9-15d65574acf2"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "stream_pages",
+                  "arguments": {
+                    "n": 500
+                  },
+                  "id": "call_4"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_4",
+                  "name": "stream_pages",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "settle_channel",
+                  "arguments": {},
+                  "id": "call_5"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_5",
+                  "name": "settle_channel",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "create_escrow",
+                  "arguments": {
+                    "worker": "data_science",
+                    "amount_micros": 25000000
+                  },
+                  "id": "call_6"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_6",
+                  "name": "create_escrow",
+                  "result": {
+                    "error": "HTTP 404: {\"error\":\"NOT_FOUND\"}",
+                    "errorCode": "NOT_FOUND"
+                  },
+                  "errorCode": "NOT_FOUND"
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "fund_escrow",
+                  "arguments": {},
+                  "id": "call_7"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_7",
+                  "name": "fund_escrow",
+                  "result": {
+                    "error": "No escrow to fund"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860733,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "toolCalls": [
+            {
+              "name": "request_inspection",
+              "arguments": {
+                "artifactBase64": "UGZ1bmM=",
+                "declaredMediaType": "application/octet-stream"
+              },
+              "id": "call_8"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860733,
+      "type": "tool_call",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolCall": {
+          "name": "request_inspection",
+          "arguments": {
+            "artifactBase64": "UGZ1bmM=",
+            "declaredMediaType": "application/octet-stream"
+          },
+          "id": "call_8"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860733,
+      "type": "tool_result",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolResult": {
+          "toolCallId": "call_8",
+          "name": "request_inspection",
+          "result": {
+            "error": "No escrow to inspect"
+          }
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860733,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "get_vault_balance",
+                  "arguments": {},
+                  "id": "call_2"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_2",
+                  "name": "get_vault_balance",
+                  "result": {
+                    "funded": 50000000,
+                    "reserved": 0,
+                    "committed": 0,
+                    "available": 50000000
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "open_channel",
+                  "arguments": {
+                    "worker": "scraper",
+                    "ceiling_micros": 100000
+                  },
+                  "id": "call_3"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_3",
+                  "name": "open_channel",
+                  "result": {
+                    "channelId": "73ecc5ee-0f06-4df2-9cfe-13b97c30db74",
+                    "ceiling": 100000,
+                    "expiresAt": 1793931660627,
+                    "vaultId": "cc3aef84-0f91-493a-8ff9-15d65574acf2"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "stream_pages",
+                  "arguments": {
+                    "n": 500
+                  },
+                  "id": "call_4"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_4",
+                  "name": "stream_pages",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "settle_channel",
+                  "arguments": {},
+                  "id": "call_5"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_5",
+                  "name": "settle_channel",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "create_escrow",
+                  "arguments": {
+                    "worker": "data_science",
+                    "amount_micros": 25000000
+                  },
+                  "id": "call_6"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_6",
+                  "name": "create_escrow",
+                  "result": {
+                    "error": "HTTP 404: {\"error\":\"NOT_FOUND\"}",
+                    "errorCode": "NOT_FOUND"
+                  },
+                  "errorCode": "NOT_FOUND"
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "fund_escrow",
+                  "arguments": {},
+                  "id": "call_7"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_7",
+                  "name": "fund_escrow",
+                  "result": {
+                    "error": "No escrow to fund"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "request_inspection",
+                  "arguments": {
+                    "artifactBase64": "UGZ1bmM=",
+                    "declaredMediaType": "application/octet-stream"
+                  },
+                  "id": "call_8"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_8",
+                  "name": "request_inspection",
+                  "result": {
+                    "error": "No escrow to inspect"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860733,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "toolCalls": [
+            {
+              "name": "get_trust",
+              "arguments": {},
+              "id": "call_9"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860733,
+      "type": "tool_call",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolCall": {
+          "name": "get_trust",
+          "arguments": {},
+          "id": "call_9"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860736,
+      "type": "tool_result",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "toolResult": {
+          "toolCallId": "call_9",
+          "name": "get_trust",
+          "result": {
+            "error": "HTTP 404: {\"error\":\"NOT_FOUND\"}",
+            "errorCode": "NOT_FOUND"
+          },
+          "errorCode": "NOT_FOUND"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860736,
+      "type": "model_request",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "You are a Buyer agent in the ATN (Autonomous Trust Network). Your goal is to hire workers to perform tasks and pay them fairly through escrow.\n\nAvailable workers:\n- scraper: scrapes web pages, charges per page streamed\n- data_science: processes data, charges per escrow\n\nYou have a vault with funds. You can:\n1. List workers and check their trust scores\n2. Check vault balance\n3. Open a streaming channel to a worker (set a ceiling in micro-dollars)\n4. Stream pages through the channel (each voucher increments the amount)\n5. Settle the channel to pay for streamed pages\n5. Create an escrow for a fixed-price job\n6. Fund the escrow (authorizes payment hold)\n7. Request inspection of delivered artifact (PASS -> RELEASED, FAIL -> REFUNDED)\n8. Check trust scores\n\nRules:\n- Always check trust before creating escrow\n- Set appropriate ceilings based on vault balance\n- React to inspection results: if FAIL, trust drops; if PASS, trust increases\n- Never trust model output for authorization - the server enforces all limits\n\nStart by listing workers and checking vault balance."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "list_workers",
+                  "arguments": {},
+                  "id": "call_1"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_1",
+                  "name": "list_workers",
+                  "result": [
+                    {
+                      "id": "buyer",
+                      "name": "Buyer",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "scraper",
+                      "name": "Scraper",
+                      "type": "scraper",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "data_science",
+                      "name": "Data Science",
+                      "type": "data_science",
+                      "trustScore": 500
+                    },
+                    {
+                      "id": "attacker",
+                      "name": "Attacker",
+                      "type": "data_science",
+                      "trustScore": 500
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "get_vault_balance",
+                  "arguments": {},
+                  "id": "call_2"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_2",
+                  "name": "get_vault_balance",
+                  "result": {
+                    "funded": 50000000,
+                    "reserved": 0,
+                    "committed": 0,
+                    "available": 50000000
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "open_channel",
+                  "arguments": {
+                    "worker": "scraper",
+                    "ceiling_micros": 100000
+                  },
+                  "id": "call_3"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_3",
+                  "name": "open_channel",
+                  "result": {
+                    "channelId": "73ecc5ee-0f06-4df2-9cfe-13b97c30db74",
+                    "ceiling": 100000,
+                    "expiresAt": 1793931660627,
+                    "vaultId": "cc3aef84-0f91-493a-8ff9-15d65574acf2"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "stream_pages",
+                  "arguments": {
+                    "n": 500
+                  },
+                  "id": "call_4"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_4",
+                  "name": "stream_pages",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "settle_channel",
+                  "arguments": {},
+                  "id": "call_5"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_5",
+                  "name": "settle_channel",
+                  "result": {
+                    "error": "No open channel"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "create_escrow",
+                  "arguments": {
+                    "worker": "data_science",
+                    "amount_micros": 25000000
+                  },
+                  "id": "call_6"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_6",
+                  "name": "create_escrow",
+                  "result": {
+                    "error": "HTTP 404: {\"error\":\"NOT_FOUND\"}",
+                    "errorCode": "NOT_FOUND"
+                  },
+                  "errorCode": "NOT_FOUND"
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "fund_escrow",
+                  "arguments": {},
+                  "id": "call_7"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_7",
+                  "name": "fund_escrow",
+                  "result": {
+                    "error": "No escrow to fund"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "request_inspection",
+                  "arguments": {
+                    "artifactBase64": "UGZ1bmM=",
+                    "declaredMediaType": "application/octet-stream"
+                  },
+                  "id": "call_8"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_8",
+                  "name": "request_inspection",
+                  "result": {
+                    "error": "No escrow to inspect"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "get_trust",
+                  "arguments": {},
+                  "id": "call_9"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "parts": [
+              {
+                "functionResponse": {
+                  "toolCallId": "call_9",
+                  "name": "get_trust",
+                  "result": {
+                    "error": "HTTP 404: {\"error\":\"NOT_FOUND\"}",
+                    "errorCode": "NOT_FOUND"
+                  },
+                  "errorCode": "NOT_FOUND"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": 1793929860736,
+      "type": "model_response",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "response": {
+          "text": "ScriptedModel: no matching script entry"
+        }
+      }
+    },
+    {
+      "timestamp": 1793929860737,
+      "type": "event",
+      "modelLabel": "MOCK MODEL",
+      "data": {
+        "type": "scenario_end",
+        "success": false,
+        "finalState": {
+          "vaultCommitted": 0,
+          "vaultAvailable": 49900000,
+          "payeeTrust": 500
+        }
+      }
+    }
+  ]
+}

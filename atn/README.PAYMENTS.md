@@ -93,3 +93,10 @@ npm run paypal:smoke
 ```
 
 The payment tests use real module imports, an in-memory SQLite database, and injected fake `fetch` responses only. They need no PayPal credentials and make no real network or sandbox calls. Sandbox behavior in this suite is verified against stubs, not live credentials.
+## PAYPAL_SANDBOX server mode
+
+PayPal Orders need a human buyer to approve each order in a browser, so a server cannot authorize or capture them alone.
+With `SETTLEMENT_MODE=PAYPAL_SANDBOX` the server uses `HybridSandboxAdapter`: escrow holds (authorize, capture, void, refund)
+stay ledger-only, and real PayPal Payouts calls are made for channel settlement and escrow release. The full Orders flow
+(create, buyer approval, authorize, capture, refund, void) is exercised by `npm run paypal:smoke`, which needs real sandbox credentials in `atn/.env`.
+`SETTLEMENT_MODE=SIMULATED` (the default) makes no network calls.
