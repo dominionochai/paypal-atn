@@ -45,7 +45,8 @@ async function runSmoke() {
   } catch (e) {
     if (e instanceof PaymentProviderError && e.status === 401) {
       console.error('PayPal rejected the credentials. Put your real sandbox Client ID and Secret in atn/.env and rerun.');
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     throw e;
   }
@@ -71,7 +72,8 @@ async function runSmoke() {
   
   if (!process.stdin.isTTY) {
     console.error('   stdin is not a TTY - aborting (no auto-continue)');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   
   console.log('   Press Enter after approval (no auto-continue)...');
@@ -132,7 +134,8 @@ async function runSmoke() {
   
   if (!process.stdin.isTTY) {
     console.error('   stdin is not a TTY - aborting');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   
   console.log('   Press Enter after approval...');
@@ -180,5 +183,5 @@ runSmoke().catch(e => {
   if (e instanceof PaymentProviderError && e.status === 401) {
     console.error('PayPal rejected the credentials. Put your real sandbox Client ID and Secret in atn/.env and rerun.');
   }
-  process.exit(1);
+  process.exitCode = 1;
 });
