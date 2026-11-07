@@ -48,7 +48,7 @@ function canonicalJson(value) {
 }
 
 function signRequest(agentId, method, path, bodyObj, privateKeyPem) {
-  const bodyBuf = Buffer.from(JSON.stringify(bodyObj ?? {}));
+  const bodyBuf = Buffer.from(bodyObj === undefined || bodyObj === null ? '' : JSON.stringify(bodyObj));
   const bodySha256 = crypto.createHash('sha256').update(bodyBuf).digest('hex');
   const timestamp = Date.now();
   const nonce = crypto.randomBytes(8).toString('hex');
@@ -71,7 +71,7 @@ async function call(base, method, route, body, headers, agentId, privateKeyPem) 
   if (body !== undefined && body !== null) {
     reqHeaders['content-type'] = 'application/json';
   }
-  if (agentId && privateKeyPem && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method)) {
+  if (agentId && privateKeyPem && ['POST', 'PUT', 'DELETE', 'PATCH', 'GET'].includes(method)) {
     const sigHeaders = signRequest(agentId, method, route, body, privateKeyPem);
     Object.assign(reqHeaders, sigHeaders);
   }
@@ -314,7 +314,7 @@ async function run() {
   const vc1 = vaultCheck1.json?.committed;
   const va1 = vaultCheck1.json?.funded - vaultCheck1.json?.committed - vaultCheck1.json?.reserved;
   console.log('vault committed ' + vc1 + ' and available ' + va1);
-  add('Vault state after escrow 1', 'PASS', 'vault committed ' + vc1 + ' and available ' + va1);
+  add('Vault state after escrow 1', vc1 === 25_100_000 && va1 === 24_900_000 ? 'PASS' : 'FAIL', 'vault committed ' + vc1 + ' and available ' + va1 + ' (expected 25100000 and 24900000)');
 
   // Escrow 2: FAIL -> REFUNDED (create, fund, inspect with bad artifact)
   const escrow2 = await call(base, 'POST', '/v1/escrows', {
@@ -332,7 +332,7 @@ async function run() {
 
   const vaultCheck2 = await call(base, 'GET', '/v1/vaults/' + encodeURIComponent(vaultId), null, adminHeaders, PRINCIPAL_ID, prinSetupPrivPem);
   const va2 = vaultCheck2.json?.funded - vaultCheck2.json?.committed - vaultCheck2.json?.reserved;
-  add('Vault available after escrow 2 refund', 'PASS', 'available back to ' + va2);
+  add('Vault available after escrow 2 refund', va2 === 24_900_000 ? 'PASS' : 'FAIL', 'available ' + va2 + ' (expected 24900000)');
 
   // === NEW STEP 2: UNSIGNED channel create is rejected 401 MISSING_ENVELOPE ===
   const unsignedCreate = await fetch(base + '/v1/channels', {
@@ -358,9 +358,11 @@ async function run() {
 
   // Spend after revocation: the vault is revoked, so authorize() would deny with VAULT_REVOKED
   // This is tested in unit tests; the streaming voucher path doesn't enforce vaults
-  add('Spend after revocation denied (vault revoked, authorize path)', 'PASS', 'VAULT_REVOKED enforced in authorize()');
+  const afterRevoke = await call(base, 'POST', '/v1/channels', { payerAgentId: PAYER, payeeAgentId: PAYEE, vaultId: vaultId, ceiling: 100_000, ttlSeconds: 600 }, adminHeaders, PAYER, payerSetupPrivPem);
+  if (afterRevoke.status === 422) add('New spend after revocation is denied', 'PASS', 'HTTP 422 ' + (afterRevoke.json?.error ?? ''));
+  else add('New spend after revocation is denied', 'FAIL', 'HTTP ' + afterRevoke.status + ' ' + afterRevoke.raw);
 
-  add('Total charged', 'PASS', '100000 micro-dollars');
+  add('Total charged', settled.json?.amount === 100_000 ? 'PASS' : 'FAIL', String(settled.json?.amount) + ' micro-dollars');
 }
 
 async function cleanup() {

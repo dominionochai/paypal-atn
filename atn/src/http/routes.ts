@@ -58,6 +58,17 @@ function verifyAdminToken(headers: IncomingHttpHeaders): boolean {
   return token === adminToken;
 }
 
+/** Returns a denial detail when the payee's trust score is below the delegation's minimum, else null. */
+function counterpartyTrustDenial(db: Database, vaultId: string, payeeAgentId: string): string | null {
+  const vault = getVault(db, vaultId);
+  if (!vault) return null;
+  const row = db.prepare('SELECT min_counterparty_trust AS minimum FROM delegations WHERE id = ?').get(vault.delegation_id) as { minimum: number | null } | undefined;
+  if (row === undefined || row.minimum === null) return null;
+  const trust = db.prepare('SELECT score FROM merchant_trust WHERE agent_id = ?').get(payeeAgentId) as { score: number } | undefined;
+  const score = trust === undefined ? 500 : trust.score;
+  return score < row.minimum ? 'counterparty trust ' + String(score) + ' is below the delegation minimum ' + String(row.minimum) : null;
+}
+
 export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
   const { method, path, headers, body, db } = input;
   const segments = path.split('?')[0]?.split('/').filter((s) => s.length > 0) ?? [];
@@ -132,10 +143,14 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       };
 
       // Determine if route requires principal signature or agent signature
+      const isGetVault = method === 'GET' && segments.length === 3 && segments[0] === 'v1' && segments[1] === 'vaults';
+      // A principal reads its vault with its own key; an agent signer keeps the agent key path (and is refused as a non-party).
+      const getVaultSignedByPrincipal = isGetVault && db.prepare('SELECT 1 AS found FROM principals WHERE external_id = ?').get(agentId) !== undefined;
       const isPrincipalSignedRoute =
         (segments.length === 2 && segments[0] === 'v1' && segments[1] === 'vaults') ||
         (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'delegations' && segments[3] === 'revoke') ||
-        (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'vaults' && segments[3] === 'revoke');
+        (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'vaults' && segments[3] === 'revoke') ||
+        getVaultSignedByPrincipal;
 
       let publicKey = '';
       let actorId = agentId; // For principal routes, this is the principal's external_id
@@ -318,6 +333,11 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       const expiresAt = p.expiresAt;
       const nonce = p.nonce;
       const version = p.version;
+      const minTrustRaw = p.minCounterpartyTrust;
+      if (minTrustRaw !== undefined && minTrustRaw !== null && (typeof minTrustRaw !== 'number' || !Number.isInteger(minTrustRaw) || minTrustRaw < 0 || minTrustRaw > 1000)) {
+        return bad('minCounterpartyTrust must be an integer between 0 and 1000');
+      }
+      const minTrust: number | null = typeof minTrustRaw === 'number' ? minTrustRaw : null;
 
       if (version !== 1 || !nonEmptyString(agentId) || !nonEmptyString(principalIdStr) || typeof ceiling !== 'number' || !Array.isArray(scope) || !Array.isArray(counterparties) || !nonEmptyString(nonce)) {
         return bad('invalid delegation payload fields or version');
@@ -346,6 +366,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         counterparties: counterparties as string[],
         notBefore: typeof notBefore === 'string' ? notBefore : null,
         expiresAt: typeof expiresAt === 'string' ? expiresAt : null,
+        ...(minTrust !== null ? { minCounterpartyTrust: minTrust } : {}),
         nonce,
       };
 
@@ -377,8 +398,8 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       const insert = db.prepare(
         `INSERT INTO delegations (
            external_id, principal_id, agent_id, budget_ceiling, currency, status,
-           expires_at, scope_json, counterparty_allowlist_json, nonce, not_before, signature
-         ) VALUES (?, ?, ?, ?, 'USD', 'ACTIVE', ?, ?, ?, ?, ?, ?)`
+           expires_at, scope_json, counterparty_allowlist_json, nonce, not_before, signature, min_counterparty_trust
+         ) VALUES (?, ?, ?, ?, 'USD', 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         delegationExternalId,
         principal.id,
@@ -390,6 +411,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         nonce,
         delegationPayload.notBefore ?? null,
         signature,
+        minTrust,
       );
 
       return json(201, { delegationId: Number(insert.lastInsertRowid), externalId: delegationExternalId });
@@ -459,6 +481,8 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       
       const vault = getVault(db, vaultId);
       if (!vault) return json(404, { error: 'NOT_FOUND', detail: 'vault not found' });
+      const untrustedChannel = counterpartyTrustDenial(db, vaultId, payeeAgentId);
+      if (untrustedChannel !== null) return json(422, { error: 'COUNTERPARTY_UNTRUSTED', detail: untrustedChannel });
       if (vault.state !== 'OPEN') return json(422, { error: 'VAULT_CLOSED', detail: 'vault is not open' });
       const vaultExpMs = Date.parse(vault.expires_at);
       if (Number.isFinite(vaultExpMs) && vaultExpMs <= Date.now()) return json(422, { error: 'VAULT_EXPIRED', detail: 'vault has expired' });
@@ -572,6 +596,8 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
       if (!positiveInt(amount)) return bad('amount must be a positive integer in micro-dollars');
       if (!nonEmptyString(vaultId)) return bad('vaultId must be a non-empty string');
       if (typeof deadlineAt !== 'number') return bad('deadlineAt must be a timestamp number');
+      const untrustedEscrow = counterpartyTrustDenial(db, vaultId, payeeAgentId);
+      if (untrustedEscrow !== null) return json(422, { error: 'COUNTERPARTY_UNTRUSTED', detail: untrustedEscrow });
       try {
         const created = createEscrow(db, {
           payerAgentId,

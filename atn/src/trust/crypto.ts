@@ -11,6 +11,7 @@ export interface DelegationPayload {
   counterpartyAllowlist?: readonly string[];
   notBefore?: string | null;
   expiresAt?: string | null;
+  minCounterpartyTrust?: number;
   nonce: string;
 }
 
