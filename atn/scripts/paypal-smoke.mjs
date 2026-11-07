@@ -4,6 +4,9 @@
 
 import { SimulatedAdapter, SandboxAdapter, MissingCredentialsError, PaymentProviderError } from '../src/payments/adapter.js';
 
+// PayPal replays the original response for a repeated PayPal-Request-Id, so every run needs fresh keys.
+const RUN_ID = Date.now().toString(36);
+
 const REQUIRED_ENV = [
   'PAYPAL_CLIENT_ID',
   'PAYPAL_CLIENT_SECRET',
@@ -56,7 +59,7 @@ async function runSmoke() {
   const orderResult = await adapter.createAuthorizeOrder({
     amount: 100000, // $0.10 in micro-dollars
     currency: 'USD',
-    idempotencyKey: 'smoke-auth-1',
+    idempotencyKey: 'smoke-' + RUN_ID + '-auth-1',
   });
   console.log('   Order ID:', orderResult.orderId);
   console.log('   Approve URL:', orderResult.approveUrl);
@@ -88,7 +91,7 @@ async function runSmoke() {
   console.log('\n4. Authorizing the order...');
   const authResult = await adapter.authorizeOrder({
     orderId: orderResult.orderId,
-    idempotencyKey: 'smoke-auth-confirm-1',
+    idempotencyKey: 'smoke-' + RUN_ID + '-auth-confirm-1',
   });
   console.log('   Authorization ID:', authResult.ref);
   printTable([
@@ -101,7 +104,7 @@ async function runSmoke() {
   const captureResult = await adapter.capture({
     authRef: authResult.ref,
     amount: 100000,
-    idempotencyKey: 'smoke-capture-1',
+    idempotencyKey: 'smoke-' + RUN_ID + '-capture-1',
   });
   console.log('   Capture ID:', captureResult.ref);
   printTable([
@@ -114,7 +117,7 @@ async function runSmoke() {
   await adapter.refund({
     captureRef: captureResult.ref,
     amount: 100000,
-    idempotencyKey: 'smoke-refund-1',
+    idempotencyKey: 'smoke-' + RUN_ID + '-refund-1',
   });
   console.log('   Refund successful');
   printTable([{ label: 'Status', value: 'REFUNDED' }]);
@@ -124,7 +127,7 @@ async function runSmoke() {
   const orderResult2 = await adapter.createAuthorizeOrder({
     amount: 100000,
     currency: 'USD',
-    idempotencyKey: 'smoke-auth-2',
+    idempotencyKey: 'smoke-' + RUN_ID + '-auth-2',
   });
   console.log('   Order ID:', orderResult2.orderId);
   console.log('   Approve URL:', orderResult2.approveUrl);
@@ -148,14 +151,14 @@ async function runSmoke() {
   console.log('\n9. Authorizing the second order...');
   const authResult2 = await adapter.authorizeOrder({
     orderId: orderResult2.orderId,
-    idempotencyKey: 'smoke-auth-confirm-2',
+    idempotencyKey: 'smoke-' + RUN_ID + '-auth-confirm-2',
   });
   console.log('   Authorization ID:', authResult2.ref);
 
   console.log('\n10. Voiding the authorization...');
   await adapter.voidAuthorization({
     authRef: authResult2.ref,
-    idempotencyKey: 'smoke-void-1',
+    idempotencyKey: 'smoke-' + RUN_ID + '-void-1',
   });
   console.log('   Void successful');
   printTable([{ label: 'Status', value: 'VOIDED' }]);
@@ -166,7 +169,7 @@ async function runSmoke() {
     amount: 100000,
     currency: 'USD',
     payeeRef: 'smoke-payee',
-    idempotencyKey: 'smoke-payout-1',
+    idempotencyKey: 'smoke-' + RUN_ID + '-payout-1',
   });
   console.log('   Payout batch ID:', payoutResult.ref);
   printTable([
