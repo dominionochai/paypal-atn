@@ -147,7 +147,10 @@ async function fetchWithRetry(
     const headers = new Headers(options.headers);
     headers.set('PayPal-Request-Id', idempotencyKey);
     const res = await fetchImpl(url, { ...options, headers });
-    if (res.ok) return res.json();
+    if (res.ok) {
+      if (res.status === 204) return {};
+      return res.json();
+    }
     if (res.status === 429 || res.status >= 500) {
       lastError = new Error(`HTTP ${res.status}: ${await res.text()}`);
       if (attempt < maxRetries) {
