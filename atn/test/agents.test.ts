@@ -145,6 +145,23 @@ describe('GeminiClient (stubbed network, request shape only)', () => {
     expect(reply.toolCalls[0]).toMatchObject({ name: 'open_channel', args: { worker: 'w', ceiling_micros: 5 } });
   });
 
+  it('keeps Gemini 3 thought signatures and echoes them back unchanged on the function call and text parts', () => {
+    const reply = parseGeminiReply({
+      candidates: [{ content: { parts: [{ text: 'plan', thoughtSignature: 'sig-text' }, { functionCall: { name: 'get_vault_balance', args: {} }, thoughtSignature: 'sig-call-1' }, { functionCall: { name: 'get_trust', args: { worker: 'w' } } }] } }],
+    });
+    expect(reply.textSignature).toBe('sig-text');
+    expect(reply.toolCalls[0]?.thoughtSignature).toBe('sig-call-1');
+    expect(reply.toolCalls[1]?.thoughtSignature).toBeUndefined();
+    const body = buildGeminiRequest('s', [
+      { role: 'user', text: 'goal' },
+      { role: 'model', text: reply.text, toolCalls: reply.toolCalls, ...(reply.textSignature !== undefined ? { textSignature: reply.textSignature } : {}) },
+    ], [SPEC]);
+    const modelParts = body.contents[1]?.parts ?? [];
+    expect(modelParts[0]).toMatchObject({ text: 'plan', thoughtSignature: 'sig-text' });
+    expect(modelParts[1]).toMatchObject({ functionCall: { name: 'get_vault_balance' }, thoughtSignature: 'sig-call-1' });
+    expect(modelParts[2]?.thoughtSignature).toBeUndefined();
+  });
+
   it('reports a blocked prompt instead of returning an empty answer', () => {
     expect(() => parseGeminiReply({ promptFeedback: { blockReason: 'SAFETY' } })).toThrow(/blocked: SAFETY/);
   });

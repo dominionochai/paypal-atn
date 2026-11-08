@@ -13,16 +13,19 @@ export interface ToolCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  /** Gemini 3 thought signature: must be echoed back unchanged with the function call. */
+  thoughtSignature?: string;
 }
 
 export type ChatMessage =
   | { role: 'user'; text: string }
-  | { role: 'model'; text: string; toolCalls: ToolCall[] }
+  | { role: 'model'; text: string; toolCalls: ToolCall[]; textSignature?: string }
   | { role: 'tool'; callId: string; name: string; result: unknown };
 
 export interface ModelReply {
   text: string;
   toolCalls: ToolCall[];
+  textSignature?: string;
 }
 
 export interface ModelClient {
@@ -89,6 +92,7 @@ export interface GeminiOptions {
 
 interface GeminiPart {
   text?: string;
+  thoughtSignature?: string;
   functionCall?: { name: string; args?: Record<string, unknown> };
   functionResponse?: { name: string; response: { result: unknown } };
 }
@@ -113,8 +117,10 @@ export function buildGeminiRequest(system: string, messages: readonly ChatMessag
       contents.push({ role: 'user', parts: [{ text: message.text }] });
     } else if (message.role === 'model') {
       const parts: GeminiPart[] = [];
-      if (message.text.length > 0) parts.push({ text: message.text });
-      for (const toolCall of message.toolCalls) parts.push({ functionCall: { name: toolCall.name, args: toolCall.args } });
+      if (message.text.length > 0) parts.push({ text: message.text, ...(message.textSignature !== undefined ? { thoughtSignature: message.textSignature } : {}) });
+      for (const toolCall of message.toolCalls) {
+        parts.push({ functionCall: { name: toolCall.name, args: toolCall.args }, ...(toolCall.thoughtSignature !== undefined ? { thoughtSignature: toolCall.thoughtSignature } : {}) });
+      }
       if (parts.length > 0) contents.push({ role: 'model', parts });
     } else {
       const part: GeminiPart = { functionResponse: { name: message.name, response: { result: message.result } } };
@@ -147,14 +153,23 @@ export function parseGeminiReply(body: GeminiResponseBody): ModelReply {
   }
   const parts = candidate.content?.parts ?? [];
   let text = '';
+  let textSignature: string | undefined;
   const toolCalls: ToolCall[] = [];
   parts.forEach((part, index) => {
-    if (typeof part.text === 'string') text += part.text;
+    if (typeof part.text === 'string') {
+      text += part.text;
+      if (part.thoughtSignature !== undefined) textSignature = part.thoughtSignature;
+    }
     if (part.functionCall !== undefined) {
-      toolCalls.push({ id: 'gemini_' + String(index) + '_' + part.functionCall.name, name: part.functionCall.name, args: part.functionCall.args ?? {} });
+      toolCalls.push({
+        id: 'gemini_' + String(index) + '_' + part.functionCall.name,
+        name: part.functionCall.name,
+        args: part.functionCall.args ?? {},
+        ...(part.thoughtSignature !== undefined ? { thoughtSignature: part.thoughtSignature } : {}),
+      });
     }
   });
-  return { text, toolCalls };
+  return { text, toolCalls, ...(textSignature !== undefined ? { textSignature } : {}) };
 }
 
 function redact(text: string, secret: string): string {

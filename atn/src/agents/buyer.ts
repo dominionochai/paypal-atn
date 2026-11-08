@@ -175,7 +175,7 @@ export async function runBuyer(model: ModelClient, ctx: BuyerContext, goal: stri
   let finalText = '';
   for (let step = 1; step <= maxSteps; step += 1) {
     const reply = await model.generate(SYSTEM_PROMPT, messages, TOOL_SPECS);
-    messages.push({ role: 'model', text: reply.text, toolCalls: reply.toolCalls });
+    messages.push({ role: 'model', text: reply.text, toolCalls: reply.toolCalls, ...(reply.textSignature !== undefined ? { textSignature: reply.textSignature } : {}) });
     const entry: TranscriptEntry = { step, text: reply.text, calls: [] };
     transcript.push(entry);
     if (reply.toolCalls.length === 0) {
