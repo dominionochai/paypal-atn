@@ -73,6 +73,21 @@ describe('server-side controls the agents rely on', () => {
     }
   });
 
+  it('refuses an escrow for an agent that is not on the delegation allowlist, and reserves nothing', async () => {
+    const world = await createWorld();
+    try {
+      const refused = await world.client.createEscrow(world.buyer, world.attacker.id, world.vaultId, 5_000_000, 'allowlist-escrow-1');
+      expect(refused.status).toBe(422);
+      expect(refused.body.error).toBe('COUNTERPARTY_DENIED');
+      const snapshot = await world.client.vaultSnapshot(world.principal, world.vaultId);
+      expect(snapshot.reserved).toBe(0);
+      const allowed = await world.client.createEscrow(world.buyer, world.datasci.id, world.vaultId, 5_000_000, 'allowlist-escrow-2');
+      expect(allowed.status).toBe(201);
+    } finally {
+      await world.close();
+    }
+  });
+
   it('refuses an unknown tool and bad arguments without throwing', async () => {
     const world = await createWorld();
     try {

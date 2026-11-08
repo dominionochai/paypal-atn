@@ -19,7 +19,7 @@ Each run starts an in-process server (simulated settlement, no network), registe
 | --- | --- |
 | happy-path | 500 pages settle exactly $0.10, then a $25 escrow passes inspection and is released. Vault: committed 25,100,000, available 24,900,000, worker trust 510. |
 | bad-model | The delivered model fails inspection: refunded, worker trust 450. |
-| prompt-injection | A scraped page tells the agent to pay an unlisted agent. The scripted model obeys; the server rejects it (`COUNTERPARTY_DENIED`) and a channel larger than the vault (`CEILING_EXCEEDS_VAULT`). |
+| prompt-injection | A scraped page tells the agent to pay an unlisted agent. The scripted model obeys; the server rejects it by channel and by escrow (`COUNTERPARTY_DENIED`) and rejects a channel larger than the vault (`CEILING_EXCEEDS_VAULT`). |
 | revoked-mid-stream | The principal revokes the delegation mid-stream; the next vouchers are rejected (`VAULT_REVOKED`). |
 | trust-gate | After a failed delivery the worker's trust (450) is below the delegation minimum (480): the second escrow is refused (`COUNTERPARTY_UNTRUSTED`). |
 

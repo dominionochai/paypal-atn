@@ -117,7 +117,7 @@ Five scenarios exercise this (`npm run scenario -- <name>`):
 | --- | --- |
 | `happy-path` | 500 pages settle exactly $0.10, then a $25 escrow passes inspection and is released. Vault committed 25,100,000, available 24,900,000, worker trust 510. |
 | `bad-model` | The delivered model fails inspection: refunded, worker trust 450. |
-| `prompt-injection` | A scraped page tells the agent to pay an unlisted agent. The server rejects the payment and an oversized channel. |
+| `prompt-injection` | A scraped page tells the agent to pay an unlisted agent. The server rejects the payment, by channel and by escrow, and an oversized channel. |
 | `revoked-mid-stream` | The human revokes mid-stream and the next vouchers are rejected. |
 | `trust-gate` | After a failed delivery the worker's trust is below the delegation minimum, so a second escrow is refused. |
 

@@ -4,7 +4,7 @@ import type { Database } from '../db/db.js';
 import { openChannel, getChannel, acceptVoucher, settleChannel, closeChannel, AlreadySettledError, UnknownChannelError } from '../streaming/channel.js';
 import type { VoucherInput } from '../streaming/voucher.js';
 import { createPaymentAdapter } from '../payments/adapter.js';
-import { createEscrow, fundEscrow, inspectEscrow, refundEscrow } from '../escrow/escrow.js';
+import { createEscrow, fundEscrow, inspectEscrow, refundEscrow, EscrowCounterpartyError } from '../escrow/escrow.js';
 import { verifyDelegation, verifyRequest, type DelegationPayload, type RequestEnvelopePayload } from '../trust/crypto.js';
 import { createVault, getVault, revokeDelegation, revokeVault } from '../trust/authority.js';
 
@@ -613,6 +613,7 @@ export async function handleRequest(input: RouteInput): Promise<RouteOutput> {
         return json(201, { escrowId: created.id, amount: created.amount, status: created.status });
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);
+        if (e instanceof EscrowCounterpartyError) return json(422, { error: 'COUNTERPARTY_DENIED', detail });
         return json(422, { error: 'ESCROW_CREATE_FAILED', detail });
       }
     }

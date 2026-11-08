@@ -54,6 +54,13 @@ export class EscrowStateError extends Error {
   }
 }
 
+export class EscrowCounterpartyError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = 'EscrowCounterpartyError';
+  }
+}
+
 export class EscrowConflictError extends Error {
   constructor(readonly idempotencyKey: string) {
     super(`Escrow idempotency key ${JSON.stringify(idempotencyKey)} was used with different parameters`);
@@ -126,6 +133,12 @@ export function createEscrow(db: Database, input: CreateEscrowInput): EscrowRow 
     if (!vault || vault.state !== 'OPEN') {
       throw new Error('Vault not found or not open');
     }
+    const payee = db.prepare('SELECT revoked_at FROM agents WHERE external_id = ?').get(input.payeeAgentId) as { revoked_at: number | null } | undefined;
+    if (payee === undefined) throw new EscrowCounterpartyError('Payee agent not found');
+    if (payee.revoked_at !== null) throw new EscrowCounterpartyError('Payee agent is revoked');
+    const delegation = db.prepare('SELECT counterparty_allowlist_json FROM delegations WHERE id = ?').get(vault.delegation_id) as { counterparty_allowlist_json: string | null } | undefined;
+    const allowedPayees = JSON.parse(delegation?.counterparty_allowlist_json || '[]') as string[];
+    if (!allowedPayees.includes(input.payeeAgentId)) throw new EscrowCounterpartyError('Payee not in delegation counterparties');
     const now = Date.now();
     const ttlSeconds = Math.max(1, Math.ceil((input.deadlineAt - now) / 1000));
     const reservation = reserveForChannel(db, input.vaultId, input.amount, ttlSeconds, now);
