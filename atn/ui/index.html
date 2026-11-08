@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ATN – Autonomous Trust Network</title>
+  <meta name="description" content="A trust layer for agent commerce: capped, expiring, revocable budgets that the server enforces even when an AI agent is tricked.">
+  <meta name="color-scheme" content="dark light">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23000'/%3E%3Cpath d='M12 4.5l6 2.4v4.4c0 3.8-2.5 6.7-6 8.2-3.5-1.5-6-4.4-6-8.2V6.9l6-2.4z' fill='none' stroke='white' stroke-width='1.8' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <script>try{var q=new URLSearchParams(location.search).get('theme');if(q==='light'||q==='dark')document.documentElement.setAttribute('data-theme',q);}catch(e){}</script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Icon sprite: one stroke style everywhere. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5.2c0 4.4-3 7.8-7 9.8-4-2-7-5.4-7-9.8V6l7-3z"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+      <symbol id="i-person" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c.8-3.6 3.6-5.6 7-5.6s6.2 2 7 5.6"/></symbol>
+      <symbol id="i-agent" viewBox="0 0 24 24"><rect x="5" y="8.5" width="14" height="10.5" rx="3.5"/><path d="M12 4.5v4M9.5 13.2v.6M14.5 13.2v.6M3 13.5v2M21 13.5v2"/></symbol>
+      <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.8 2.6 2.8 14.4 0 17M12 3.5c-2.8 2.6-2.8 14.4 0 17"/></symbol>
+      <symbol id="i-cube" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3zM12 12l8-4.5M12 12v9M12 12L4 7.5"/></symbol>
+      <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M6 20.5V11a6 6 0 0112 0v9.5l-3-2-3 2-3-2-3 2z"/><path d="M9.6 11v.8M14.4 11v.8"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2.6"/><path d="M8 10.5V8a4 4 0 018 0v2.5"/></symbol>
+      <symbol id="i-card" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12.5" rx="2.6"/><path d="M3 10.5h18M7 15h4"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7V3z"/><path d="M14 3v4h4"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.2v13.6L19 12 8 5.2z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7.5 5h3.2v14H7.5zM13.3 5h3.2v14h-3.2z" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-prev" viewBox="0 0 24 24"><path d="M17 6.2v11.6L8.6 12 17 6.2zM6.5 6v12" /></symbol>
+      <symbol id="i-next" viewBox="0 0 24 24"><path d="M7 6.2v11.6L15.4 12 7 6.2zM17.5 6v12" /></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.2"/></symbol>
+    </defs>
+  </svg>
+
+  <a class="skip" href="#stage">Skip to the demo</a>
+
+  <header class="topbar glass" id="topbar">
+    <a class="brand" href="./" aria-label="ATN, Autonomous Trust Network">
+      <span class="brand-mark" aria-hidden="true"><svg class="ico"><use href="#i-shield"/></svg></span>
+      <span class="brand-text"><strong>ATN</strong><span>Autonomous Trust Network</span></span>
+    </a>
+    <nav class="tabs" id="tabs" role="tablist" aria-label="Scenarios"></nav>
+    <div class="top-actions">
+      <span class="chip" id="chip-source" tabindex="0"></span>
+      <span class="chip chip-quiet" id="chip-mode" tabindex="0" title="Settlement is simulated in this demo. A PayPal sandbox run is documented in docs/PAYPAL_SANDBOX_PROOF.md.">Settlement simulated</span>
+      <button class="btn btn-primary" id="btn-story" type="button"><svg class="ico"><use href="#i-play"/></svg><span>Play the story</span></button>
+    </div>
+  </header>
+
+  <main class="app" id="app">
+    <section class="col-main" aria-label="Demo">
+      <div class="narration" id="narration" aria-live="polite" aria-atomic="true">
+        <div class="eyebrow" id="narr-eyebrow"></div>
+        <h1 id="narr-head"></h1>
+        <p id="narr-sub"></p>
+      </div>
+
+      <div class="stage card" id="stage">
+        <div class="stage-grid" id="stage-grid">
+          <svg class="edges" id="edges" aria-hidden="true"></svg>
+          <canvas class="particles" id="particles" aria-hidden="true"></canvas>
+
+          <div class="col col-you">
+            <div class="node node-human" id="n-human">
+              <span class="avatar"><svg class="ico"><use href="#i-person"/></svg></span>
+              <div class="node-text"><strong>You</strong><span>hold the money</span></div>
+              <div class="said" id="said-human"></div>
+            </div>
+
+            <div class="vault" id="vault">
+              <div class="vault-head">
+                <span class="label">Your vault</span>
+                <span class="pill pill-state" id="vault-state">Not opened</span>
+              </div>
+              <div class="vault-amount"><span id="vault-available">$0.00</span><small id="vault-of">of $50.00 cap</small></div>
+              <div class="bar" id="vault-bar" role="img" aria-label="Vault balance">
+                <i class="seg seg-commit" id="seg-commit"></i><i class="seg seg-reserve" id="seg-reserve"></i><i class="seg seg-avail" id="seg-avail"></i>
+              </div>
+              <dl class="legend">
+                <div><dt><i class="dot dot-commit"></i>Spent</dt><dd id="lg-commit">$0.00</dd></div>
+                <div><dt><i class="dot dot-reserve"></i>On hold</dt><dd id="lg-reserve">$0.00</dd></div>
+                <div><dt><i class="dot dot-avail"></i>Available</dt><dd id="lg-avail">$0.00</dd></div>
+              </dl>
+              <div class="vault-foot">
+                <div class="clock" title="The vault closes by itself after 30 minutes">
+                  <svg class="ring" viewBox="0 0 36 36" aria-hidden="true"><circle class="ring-bg" cx="18" cy="18" r="15"/><circle class="ring-fg" id="clock-ring" cx="18" cy="18" r="15"/></svg>
+                  <div><strong id="clock-text">30:00</strong><span>until it closes</span></div>
+                </div>
+                <div class="hidden-card" title="The agent only holds a vault and its own signing key">
+                  <svg class="ico"><use href="#i-card"/></svg>
+                  <span>The agent never sees your card. It holds a vault and its own key.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col col-buyer">
+            <div class="node node-buyer" id="n-buyer">
+              <span class="avatar"><svg class="ico"><use href="#i-agent"/></svg></span>
+              <div class="node-text"><strong>Your agent</strong><span>research AI</span></div>
+              <div class="slip" id="slip" hidden><svg class="ico"><use href="#i-shield"/></svg><span>Signed permission slip</span></div>
+              <div class="said" id="said-buyer"></div>
+            </div>
+          </div>
+
+          <div class="col col-gateway">
+            <div class="gateway" id="gateway" data-verdict="idle">
+              <div class="gw-head">
+                <svg class="ico"><use href="#i-shield"/></svg>
+                <div><strong>ATN Gateway</strong><span>checks every request on the server</span></div>
+              </div>
+              <ul class="checks" id="checks">
+                <li data-check="Signature"><i class="cdot"></i><span>Signature</span></li>
+                <li data-check="Trust"><i class="cdot"></i><span>Trust score</span></li>
+                <li data-check="Vault live"><i class="cdot"></i><span>Vault live</span></li>
+                <li data-check="Ceiling"><i class="cdot"></i><span>Under the cap</span></li>
+                <li data-check="Allowlist"><i class="cdot"></i><span>On the allowlist</span></li>
+              </ul>
+              <div class="stamp" id="stamp" aria-hidden="true"><strong></strong><span></span></div>
+            </div>
+          </div>
+
+          <div class="col col-workers">
+            <div class="node node-worker" id="n-scraper">
+              <span class="avatar"><svg class="ico"><use href="#i-globe"/></svg></span>
+              <div class="node-text"><strong>Scraper</strong><span>$0.0002 a page</span></div>
+              <div class="trust" title="Merchant trust score (0–1000)"><b data-trust>500</b><span>trust</span></div>
+              <div class="said" id="said-scraper"></div>
+            </div>
+            <div class="node node-worker" id="n-datasci">
+              <span class="avatar"><svg class="ico"><use href="#i-cube"/></svg></span>
+              <div class="node-text"><strong>Data scientist</strong><span>paid through escrow</span></div>
+              <div class="trust" title="Merchant trust score (0–1000)"><b data-trust>500</b><span>trust</span></div>
+              <div class="escrow-chip" id="escrow-chip" hidden><svg class="ico"><use href="#i-lock"/></svg><span></span></div>
+              <div class="said" id="said-datasci"></div>
+            </div>
+            <div class="node node-worker node-attacker" id="n-attacker">
+              <span class="avatar"><svg class="ico"><use href="#i-ghost"/></svg></span>
+              <div class="node-text"><strong>Unlisted agent</strong><span>not on your slip</span></div>
+              <div class="blocked" id="blocked" aria-hidden="true">Blocked</div>
+              <div class="said" id="said-attacker"></div>
+            </div>
+          </div>
+
+          <div class="popover pop-trap" id="pop-trap" hidden>
+            <div class="pop-title"><svg class="ico"><use href="#i-globe"/></svg><span>Page 3 from the scraper</span></div>
+            <p id="trap-text"></p>
+          </div>
+
+          <div class="popover pop-inspect" id="pop-inspect" hidden>
+            <div class="pop-title"><svg class="ico"><use href="#i-file"/></svg><span>Delivery inspection</span></div>
+            <div class="artifact"><i class="scanline"></i><strong>model.onnx</strong><span id="art-meta"></span></div>
+            <ul class="icheck" id="icheck"></ul>
+            <div class="verdict" id="inspect-verdict"></div>
+            <p class="fine">Structural inspection: file format and forbidden-operator scan. It does not run the model yet.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="layers" id="layers">
+        <article class="layer" id="layer-1" data-layer="1">
+          <header><span class="num">1</span><div><strong>Proof-of-Agent</strong><span>A signed permission slip</span></div></header>
+          <p>Cap, allowed workers and expiry, signed by you. The agent can’t exceed it.</p>
+          <div class="metric" id="m1"><b>–</b><span>no slip yet</span></div>
+        </article>
+        <article class="layer" id="layer-2" data-layer="2">
+          <header><span class="num">2</span><div><strong>Neural Streaming</strong><span>Micro-payments at machine speed</span></div></header>
+          <p>Signed vouchers add up off-ledger. One settlement reaches PayPal.</p>
+          <div class="metric" id="m2"><b>0 <i>→</i> 0</b><span>vouchers signed → settlements</span></div>
+        </article>
+        <article class="layer" id="layer-3" data-layer="3">
+          <header><span class="num">3</span><div><strong>VeriPay Escrow</strong><span>Pay only for what verifies</span></div></header>
+          <p>Money is held, the delivery is inspected, then it’s released or refunded.</p>
+          <div class="metric" id="m3"><b>–</b><span>no escrow yet</span></div>
+        </article>
+      </div>
+    </section>
+
+    <aside class="col-log card" id="log" aria-label="Gateway log">
+      <header class="log-head">
+        <div>
+          <h2>Gateway log</h2>
+          <p>Every request the agent makes. Checked on the server, never trusted.</p>
+        </div>
+        <div class="tally"><span class="t-ok"><b id="tally-ok">0</b> allowed</span><span class="t-no"><b id="tally-no">0</b> denied</span></div>
+      </header>
+      <ol class="log-list" id="log-list"></ol>
+      <footer class="invariants" id="invariants" hidden>
+        <strong>Server invariants held</strong>
+        <ul id="inv-list"></ul>
+      </footer>
+    </aside>
+  </main>
+
+  <footer class="transport glass" id="transport">
+    <div class="tp-left">
+      <button class="icon-btn" id="btn-prev" type="button" aria-label="Previous step"><svg class="ico"><use href="#i-prev"/></svg></button>
+      <button class="icon-btn icon-btn-main" id="btn-play" type="button" aria-label="Play"><svg class="ico" id="play-ico"><use href="#i-play"/></svg></button>
+      <button class="icon-btn" id="btn-next" type="button" aria-label="Next step"><svg class="ico"><use href="#i-next"/></svg></button>
+    </div>
+    <div class="scrub" id="scrub" role="slider" tabindex="0" aria-label="Timeline" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0">
+      <div class="scrub-track"><i class="scrub-fill" id="scrub-fill"></i><span class="ticks" id="ticks"></span></div>
+      <i class="scrub-thumb" id="scrub-thumb"></i>
+    </div>
+    <div class="tp-right">
+      <span class="step-label" id="step-label">Step 1 of 1</span>
+      <button class="btn btn-ghost" id="btn-speed" type="button" aria-label="Playback speed">1×</button>
+      <button class="btn btn-ghost" id="btn-real" type="button"><svg class="ico"><use href="#i-info"/></svg><span>What’s real</span></button>
+    </div>
+  </footer>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer glass" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" aria-hidden="true">
+    <header>
+      <h2 id="drawer-title">What’s real today</h2>
+      <button class="icon-btn" id="drawer-close" type="button" aria-label="Close"><svg class="ico"><use href="#i-x"/></svg></button>
+    </header>
+    <div id="drawer-body"></div>
+  </aside>
+
+  <noscript><p style="padding:24px">This demo needs JavaScript.</p></noscript>
+
+  <script src="traces/bundle.js"></script>
+  <script src="js/util.js"></script>
+  <script src="js/copy.js"></script>
+  <script src="js/player.js"></script>
+  <script src="js/views.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

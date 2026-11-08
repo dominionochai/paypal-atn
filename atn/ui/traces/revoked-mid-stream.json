@@ -1,0 +1,335 @@
+{
+  "schema": "atn-trace/1",
+  "source": "sample",
+  "scenario": "revoked-mid-stream",
+  "title": "Revoked mid-stream",
+  "tagline": "You pull the plug. The very next payment is refused.",
+  "agent": {
+    "kind": "scripted",
+    "label": "Scripted agent (deterministic)"
+  },
+  "settlement": "SIMULATED",
+  "generatedAt": "2026-11-08T01:19:40.232Z",
+  "cast": {
+    "principal": "principal-human",
+    "buyer": "agent:buyer",
+    "scraper": "agent:scraper",
+    "datasci": "agent:datasci",
+    "attacker": "agent:attacker"
+  },
+  "injection": false,
+  "delegation": {
+    "minCounterpartyTrust": null
+  },
+  "beats": [
+    {
+      "i": 0,
+      "kind": "delegation",
+      "actor": "principal",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/delegations",
+          "ok": true,
+          "status": 201
+        }
+      ],
+      "ok": true,
+      "data": {
+        "agent": "agent:buyer",
+        "ceiling": 50000000,
+        "counterparties": [
+          "agent:scraper",
+          "agent:datasci"
+        ],
+        "scope": [
+          "invoice.pay"
+        ],
+        "expiresInMs": 1800000,
+        "alg": "Ed25519",
+        "signer": "principal-human",
+        "minCounterpartyTrust": null
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": null,
+        "escrow": null,
+        "trust": {
+          "scraper": 500,
+          "datasci": 500
+        },
+        "counters": {
+          "vouchers": 0,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 1,
+      "kind": "vault_open",
+      "actor": "principal",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/vaults",
+          "ok": true,
+          "status": 201
+        }
+      ],
+      "ok": true,
+      "data": {
+        "funded": 50000000,
+        "ttlMs": 1800000,
+        "fundingCommitment": "sha256"
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": null,
+        "escrow": null,
+        "trust": {
+          "scraper": 500,
+          "datasci": 500
+        },
+        "counters": {
+          "vouchers": 0,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 2,
+      "kind": "open_channel",
+      "actor": "buyer",
+      "target": "scraper",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/channels",
+          "ok": true,
+          "status": 201
+        }
+      ],
+      "ok": true,
+      "data": {
+        "worker": "agent:scraper",
+        "ceiling": 100000,
+        "ttlSeconds": 600
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 100000,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": {
+          "worker": "scraper",
+          "ceiling": 100000,
+          "spent": 0,
+          "status": "OPEN",
+          "vouchers": 0
+        },
+        "escrow": null,
+        "trust": {
+          "scraper": 500,
+          "datasci": 500
+        },
+        "counters": {
+          "vouchers": 0,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 3,
+      "kind": "stream",
+      "actor": "buyer",
+      "target": "scraper",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/channels/:id/vouchers",
+          "ok": true,
+          "status": 200,
+          "count": 100
+        }
+      ],
+      "ok": true,
+      "data": {
+        "worker": "agent:scraper",
+        "pages": 100,
+        "accepted": 100,
+        "perPage": 200,
+        "from": 0,
+        "to": 20000,
+        "samples": [
+          "Market data page 1: widget prices moved 0.1% week over week.",
+          "Market data page 2: widget prices moved 0.2% week over week.",
+          "Market data page 3: widget prices moved 0.3% week over week."
+        ],
+        "injected": false
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 100000,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": {
+          "worker": "scraper",
+          "ceiling": 100000,
+          "spent": 20000,
+          "status": "OPEN",
+          "vouchers": 100
+        },
+        "escrow": null,
+        "trust": {
+          "scraper": 500,
+          "datasci": 500
+        },
+        "counters": {
+          "vouchers": 100,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 4,
+      "kind": "revoke",
+      "actor": "principal",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/delegations/:id/revoke",
+          "ok": true,
+          "status": 200
+        }
+      ],
+      "ok": true,
+      "data": {
+        "what": "delegation"
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "REVOKED"
+        },
+        "channel": {
+          "worker": "scraper",
+          "ceiling": 100000,
+          "spent": 20000,
+          "status": "OPEN",
+          "vouchers": 100
+        },
+        "escrow": null,
+        "trust": {
+          "scraper": 500,
+          "datasci": 500
+        },
+        "counters": {
+          "vouchers": 100,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 5,
+      "kind": "stream",
+      "actor": "buyer",
+      "target": "scraper",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/channels/:id/vouchers",
+          "ok": false,
+          "status": 422,
+          "code": "VAULT_REVOKED",
+          "detail": "vault revoked",
+          "count": 1
+        }
+      ],
+      "ok": false,
+      "data": {
+        "worker": "agent:scraper",
+        "pages": 100,
+        "accepted": 0,
+        "perPage": 200,
+        "from": 20000,
+        "to": 20000,
+        "samples": [],
+        "injected": false
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "REVOKED"
+        },
+        "channel": {
+          "worker": "scraper",
+          "ceiling": 100000,
+          "spent": 20000,
+          "status": "OPEN",
+          "vouchers": 100
+        },
+        "escrow": null,
+        "trust": {
+          "scraper": 500,
+          "datasci": 500
+        },
+        "counters": {
+          "vouchers": 100,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 6,
+      "kind": "say",
+      "actor": "buyer",
+      "requests": [],
+      "ok": true,
+      "data": {
+        "text": "The server rejected further payments after revocation."
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "REVOKED"
+        },
+        "channel": {
+          "worker": "scraper",
+          "ceiling": 100000,
+          "spent": 20000,
+          "status": "OPEN",
+          "vouchers": 100
+        },
+        "escrow": null,
+        "trust": {
+          "scraper": 500,
+          "datasci": 500
+        },
+        "counters": {
+          "vouchers": 100,
+          "settlements": 0
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,317 @@
+{
+  "schema": "atn-trace/1",
+  "source": "sample",
+  "scenario": "trust-gate",
+  "title": "Trust gate",
+  "tagline": "A worker that failed once can no longer be hired.",
+  "agent": {
+    "kind": "scripted",
+    "label": "Scripted agent (deterministic)"
+  },
+  "settlement": "SIMULATED",
+  "generatedAt": "2026-11-08T01:19:40.232Z",
+  "cast": {
+    "principal": "principal-human",
+    "buyer": "agent:buyer",
+    "scraper": "agent:scraper",
+    "datasci": "agent:datasci",
+    "attacker": "agent:attacker"
+  },
+  "injection": false,
+  "delegation": {
+    "minCounterpartyTrust": 480
+  },
+  "beats": [
+    {
+      "i": 0,
+      "kind": "delegation",
+      "actor": "principal",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/delegations",
+          "ok": true,
+          "status": 201
+        }
+      ],
+      "ok": true,
+      "data": {
+        "agent": "agent:buyer",
+        "ceiling": 50000000,
+        "counterparties": [
+          "agent:scraper",
+          "agent:datasci"
+        ],
+        "scope": [
+          "invoice.pay"
+        ],
+        "expiresInMs": 1800000,
+        "alg": "Ed25519",
+        "signer": "principal-human",
+        "minCounterpartyTrust": 480
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": null,
+        "escrow": null,
+        "trust": {
+          "scraper": 500,
+          "datasci": 500
+        },
+        "counters": {
+          "vouchers": 0,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 1,
+      "kind": "vault_open",
+      "actor": "principal",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/vaults",
+          "ok": true,
+          "status": 201
+        }
+      ],
+      "ok": true,
+      "data": {
+        "funded": 50000000,
+        "ttlMs": 1800000,
+        "fundingCommitment": "sha256"
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": null,
+        "escrow": null,
+        "trust": {
+          "scraper": 500,
+          "datasci": 500
+        },
+        "counters": {
+          "vouchers": 0,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 2,
+      "kind": "escrow",
+      "actor": "buyer",
+      "target": "datasci",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/escrows",
+          "ok": true,
+          "status": 201
+        },
+        {
+          "method": "POST",
+          "path": "/v1/escrows/:id/fund",
+          "ok": true,
+          "status": 200
+        }
+      ],
+      "ok": true,
+      "data": {
+        "worker": "agent:datasci",
+        "amount": 25000000,
+        "status": "FUNDED"
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 25000000,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": null,
+        "escrow": {
+          "worker": "datasci",
+          "amount": 25000000,
+          "status": "FUNDED"
+        },
+        "trust": {
+          "scraper": 500,
+          "datasci": 500
+        },
+        "counters": {
+          "vouchers": 0,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 3,
+      "kind": "inspect",
+      "actor": "datasci",
+      "target": "datasci",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/escrows/:id/inspect",
+          "ok": true,
+          "status": 200
+        }
+      ],
+      "ok": true,
+      "data": {
+        "worker": "agent:datasci",
+        "amount": 25000000,
+        "outcome": "FAIL",
+        "reasons": [
+          "FORBIDDEN_OP:PyFunc",
+          "MALFORMED_PROTOBUF"
+        ],
+        "sha256": "2806171672a48864992a13b031fb3728872ada9a877c32bc7badfa8e9b893273",
+        "bytes": 6,
+        "status": "REFUNDED",
+        "trustFrom": 500,
+        "trustTo": 450
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": null,
+        "escrow": {
+          "worker": "datasci",
+          "amount": 25000000,
+          "status": "REFUNDED"
+        },
+        "trust": {
+          "scraper": 500,
+          "datasci": 450
+        },
+        "counters": {
+          "vouchers": 0,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 4,
+      "kind": "say",
+      "actor": "buyer",
+      "requests": [],
+      "ok": true,
+      "data": {
+        "text": "The first model failed inspection and was refunded."
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": null,
+        "escrow": {
+          "worker": "datasci",
+          "amount": 25000000,
+          "status": "REFUNDED"
+        },
+        "trust": {
+          "scraper": 500,
+          "datasci": 450
+        },
+        "counters": {
+          "vouchers": 0,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 5,
+      "kind": "escrow",
+      "actor": "buyer",
+      "target": "datasci",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/escrows",
+          "ok": false,
+          "status": 422,
+          "code": "COUNTERPARTY_UNTRUSTED",
+          "detail": "counterparty trust 450 is below the delegation minimum 480"
+        }
+      ],
+      "ok": false,
+      "data": {
+        "worker": "agent:datasci",
+        "amount": 25000000,
+        "status": null
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": null,
+        "escrow": {
+          "worker": "datasci",
+          "amount": 25000000,
+          "status": "REFUNDED"
+        },
+        "trust": {
+          "scraper": 500,
+          "datasci": 450
+        },
+        "counters": {
+          "vouchers": 0,
+          "settlements": 0
+        }
+      }
+    },
+    {
+      "i": 6,
+      "kind": "say",
+      "actor": "buyer",
+      "requests": [],
+      "ok": true,
+      "data": {
+        "text": "The second escrow was refused because the worker trust is too low."
+      },
+      "state": {
+        "vault": {
+          "funded": 50000000,
+          "reserved": 0,
+          "committed": 0,
+          "state": "OPEN"
+        },
+        "channel": null,
+        "escrow": {
+          "worker": "datasci",
+          "amount": 25000000,
+          "status": "REFUNDED"
+        },
+        "trust": {
+          "scraper": 500,
+          "datasci": 450
+        },
+        "counters": {
+          "vouchers": 0,
+          "settlements": 0
+        }
+      }
+    }
+  ]
+}
