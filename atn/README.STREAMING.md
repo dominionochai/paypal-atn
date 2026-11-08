@@ -53,10 +53,8 @@ The payment adapter supports `SIMULATED` and `SANDBOX` paths. `SIMULATED` is off
 
 ## Not implemented
 
-- Escrow.
-- ONNX artifact inspection.
-- HTTP routes.
 - PayPal LIVE payments.
+- A WebSocket transport wired into the HTTP gateway: the gateway accepts vouchers over HTTP, and the WebSocket module here is tested separately. Escrow and the HTTP routes are documented in README.ESCROW.md and README.API.md.
 
 ## Commands
 
